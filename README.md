@@ -22,6 +22,19 @@ echo "print(1 + 2)" | es5
 es5 -i
 ```
 
+## Benchmark
+
+es5 is regularly benchmarked against other lightweight JavaScript engines, including [Boa](https://github.com/boa-dev/boa), [MuJS](https://mujs.com/), and [Lumen](https://github.com/lucid-softworks/lumen).
+
+**Live results:** [js-engine-benchmark](https://ahaoboy.github.io/js-engine-benchmark/?selectEngines=lumen%2Cmujs%2Cboa%2Ces5)
+
+
+## React
+
+[`es5-react`](https://github.com/ahaoboy/es5-react) is a library that renders React components to the terminal, powered by es5 as its JavaScript runtime.
+
+
+
 ## Related
 
 - [MuJS](https://mujs.com/) — the original C interpreter
