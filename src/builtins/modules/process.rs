@@ -37,10 +37,10 @@ pub fn stdin_active(st: &mut State) -> bool {
     }
     let g = st.g;
     if let Some(process_ref) = st.heap.get_property(g, "process")
-        .and_then(|p| p.value.as_object()) {
-        if let Some(stdin_ref) = st.heap.get_property(process_ref, "stdin")
-            .and_then(|p| p.value.as_object()) {
-            if let Some(listeners_obj) = st.heap.get_property(stdin_ref, "__listeners")
+        .and_then(|p| p.value.as_object())
+        && let Some(stdin_ref) = st.heap.get_property(process_ref, "stdin")
+            .and_then(|p| p.value.as_object())
+            && let Some(listeners_obj) = st.heap.get_property(stdin_ref, "__listeners")
                 .and_then(|p| p.value.as_object()) {
                 let has_readable = st.heap.get_property(listeners_obj, "readable")
                     .and_then(|p| p.value.as_object())
@@ -58,8 +58,6 @@ pub fn stdin_active(st: &mut State) -> bool {
                     .unwrap_or(false);
                 return has_readable || has_data;
             }
-        }
-    }
     false
 }
 
@@ -311,15 +309,14 @@ pub fn poll_stdin_blocking(st: &mut State) -> R<()> {
         }
     }
     for f in &data_fns {
-        if let crate::value::Value::Object(_) = f {
-            if let Some(line) = &data_line {
+        if let crate::value::Value::Object(_) = f
+            && let Some(line) = &data_line {
                 st.push_value(f.clone())?;
                 st.push_undefined()?;
                 st.push_string(line)?;
                 let _ = st.call(1);
                 st.pop(1);
             }
-        }
     }
     Ok(())
 }
