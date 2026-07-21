@@ -1,0 +1,39 @@
+[package]
+name = "es5"
+version = "0.1.1"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/ahaoboy/es5"
+homepage = "https://github.com/ahaoboy/es5"
+authors = ["ahaoboy"]
+description = "A ES5 JavaScript interpreter written in Rust"
+
+[dependencies]
+miette = { version = "7", features = ["fancy"], optional = true }
+regress = "0.11"
+thiserror = { version = "2", optional = true }
+time = { version = "0.3", features = ["local-offset"] }
+git-version = { version = "0.3" }
+const-str = { version = "1" }
+itoa = "1"
+crossterm = { version = "0.29", optional = true }
+
+[features]
+default = ["cli", "modules", "symbol"]
+# fancy terminal error diagnostics via miette/thiserror
+cli = ["dep:miette", "dep:thiserror"]
+# Node.js-style builtin modules (process/os/path/fs/child_process/timers)
+modules = ["fs", "os", "path", "process", "child_process", "timers"]
+fs = ["require"]
+os = ["require"]
+path = ["require"]
+process = ["dep:crossterm", "require"]
+child_process = ["require"]
+timers = []
+symbol = []
+require = []
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
