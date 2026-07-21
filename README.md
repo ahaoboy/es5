@@ -1,6 +1,6 @@
 # es5
 
-A [MuJS](https://mujs.com/)-compatible ES5 JavaScript interpreter written in Rust.
+A [MuJS](https://mujs.com/)-compatible ES5 JavaScript engine written in Rust.
 
 ## Quick start
 
