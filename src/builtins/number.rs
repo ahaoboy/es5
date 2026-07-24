@@ -239,7 +239,7 @@ pub fn init(st: &mut State) {
         propf(st, "Number.prototype.toExponential", np_toexponential, 1).unwrap();
         propf(st, "Number.prototype.toPrecision", np_toprecision, 1).unwrap();
     }
-    st.newcconstructor(jsb_number, jsb_new_number, "Number", 0).unwrap();
+    st.newcconstructor(jsb_number, jsb_new_number, "Number", 1).unwrap();
     {
         propn(st, "MAX_VALUE", 1.7976931348623157e+308).unwrap();
         propn(st, "MIN_VALUE", 5e-324).unwrap();
