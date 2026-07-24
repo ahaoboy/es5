@@ -378,6 +378,9 @@ pub fn init(st: &mut State) {
     st.push_object(st.g).unwrap();
     st.defglobal("globalThis", JS_DONTENUM).unwrap();
 
+    st.push_object(st.g).unwrap();
+    st.defglobal("global", JS_DONTENUM).unwrap();
+
     globalf(st, "eval", jsb_eval, 1).unwrap();
     globalf(st, "parseInt", jsb_parse_int, 1).unwrap();
     globalf(st, "parseFloat", jsb_parse_float, 1).unwrap();
