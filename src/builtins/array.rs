@@ -533,9 +533,9 @@ fn ap_unshift(st: &mut State) -> R<()> {
         st.setindex(0, i - 1)?;
     }
 
-    st.setlength(0, len + top - 1)?;
+    st.setlength(0, len.saturating_add(top.saturating_sub(1)))?;
 
-    st.push_number((len + top - 1) as f64)
+    st.push_number((len.saturating_add(top.saturating_sub(1))) as f64)
 }
 
 fn ap_tostring(st: &mut State) -> R<()> {
@@ -557,10 +557,10 @@ fn ap_tostring(st: &mut State) -> R<()> {
 }
 
 fn ap_indexof(st: &mut State) -> R<()> {
-    let len = st.getlength(0)?;
+    let len = st.getlength(0)?.max(0);
     let mut from = if st.isdefined(2) { st.tointeger(2)? } else { 0 };
     if from < 0 {
-        from += len;
+        from = (from as i64 + len as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
     }
     if from < 0 {
         from = 0;
@@ -580,7 +580,7 @@ fn ap_indexof(st: &mut State) -> R<()> {
 }
 
 fn ap_lastindexof(st: &mut State) -> R<()> {
-    let len = st.getlength(0)?;
+    let len = st.getlength(0)?.max(0);
     let mut from = if st.isdefined(2) {
         st.tointeger(2)?
     } else {
@@ -590,7 +590,7 @@ fn ap_lastindexof(st: &mut State) -> R<()> {
         from = len - 1;
     }
     if from < 0 {
-        from += len;
+        from = (from as i64 + len as i64).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
     }
 
     st.copy(1)?;
