@@ -180,8 +180,8 @@ pub fn init(st: &mut State) {
         propf(st, "Math.exp", math_exp, 1).unwrap();
         propf(st, "Math.floor", math_floor, 1).unwrap();
         propf(st, "Math.log", math_log, 1).unwrap();
-        propf(st, "Math.max", math_max, 0).unwrap();
-        propf(st, "Math.min", math_min, 0).unwrap();
+        propf(st, "Math.max", math_max, 2).unwrap();
+        propf(st, "Math.min", math_min, 2).unwrap();
         propf(st, "Math.pow", math_pow, 2).unwrap();
         propf(st, "Math.random", math_random, 0).unwrap();
         propf(st, "Math.round", math_round, 1).unwrap();
