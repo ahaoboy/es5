@@ -4,7 +4,7 @@
 //! token boundaries mirror the C implementation exactly.
 
 use crate::number;
-use crate::state::{State, R};
+use crate::state::{R, State};
 use crate::utf;
 
 pub const TK_IDENTIFIER: i32 = 256;
@@ -71,13 +71,40 @@ const EOF: char = '\0';
 
 /// jsY_findword: binary search in a sorted word list.
 pub fn findword(s: &str, list: &[&str]) -> Option<usize> {
-    list.binary_search_by(|w| w.as_bytes().cmp(s.as_bytes())).ok()
+    list.binary_search_by(|w| w.as_bytes().cmp(s.as_bytes()))
+        .ok()
 }
 
 const KEYWORDS: [&str; 29] = [
-    "break", "case", "catch", "continue", "debugger", "default", "delete", "do", "else",
-    "false", "finally", "for", "function", "if", "in", "instanceof", "new", "null", "return",
-    "switch", "this", "throw", "true", "try", "typeof", "var", "void", "while", "with",
+    "break",
+    "case",
+    "catch",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "false",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "in",
+    "instanceof",
+    "new",
+    "null",
+    "return",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "var",
+    "void",
+    "while",
+    "with",
 ];
 
 /// Pretty-print a token for error messages (jsY_tokenstring).
@@ -125,7 +152,7 @@ pub struct Lexer {
     source: Vec<char>, // source as chars (newlines normalized on the fly)
     pos: usize,        // index into source (char position of NEXT char)
     pub line: u32,
-    pub col: u32,      // column of lexchar (1-based, in runes)
+    pub col: u32, // column of lexchar (1-based, in runes)
     pub lexline: u32,
     pub lexcol: u32,
     pub lexchar: char, // current lookahead character; EOF == '\0' sentinel
@@ -509,7 +536,15 @@ impl Lexer {
     fn isregexpcontext(last: i32) -> bool {
         !matches!(
             last,
-            93 | 41 | 125 | TK_IDENTIFIER | TK_NUMBER | TK_STRING | TK_FALSE | TK_NULL | TK_THIS | TK_TRUE
+            93 | 41
+                | 125
+                | TK_IDENTIFIER
+                | TK_NUMBER
+                | TK_STRING
+                | TK_FALSE
+                | TK_NULL
+                | TK_THIS
+                | TK_TRUE
         )
     }
 
@@ -520,6 +555,12 @@ impl Lexer {
 
     fn lexx(&mut self, st: &mut State) -> R<i32> {
         self.newline = false;
+
+        // skip hashbang
+        if self.accept('#')
+            && self.accept('!') {
+                self.lexlinecomment();
+            }
 
         loop {
             while utf::is_white(self.lexchar) {
@@ -713,10 +754,7 @@ impl Lexer {
             }
 
             if ('\u{20}'..='\u{7E}').contains(&self.lexchar) {
-                return self.syntax_error(
-                    st,
-                    &format!("unexpected character: '{}'", self.lexchar),
-                );
+                return self.syntax_error(st, &format!("unexpected character: '{}'", self.lexchar));
             }
             return self.syntax_error(
                 st,
@@ -870,50 +908,47 @@ impl Lexer {
         }
 
         match self.lexchar {
-                ',' | ':' | '[' | ']' | '{' | '}' => {
-                    let t = self.lexchar as i32;
-                    self.next();
-                    return Ok(t);
-                }
-                '"' => {
-                    self.next();
-                    return self.lexjsonstring(st);
-                }
-                'f' => {
-                    self.next();
-                    self.expect(st, 'a')?;
-                    self.expect(st, 'l')?;
-                    self.expect(st, 's')?;
-                    self.expect(st, 'e')?;
-                    return Ok(TK_FALSE);
-                }
-                'n' => {
-                    self.next();
-                    self.expect(st, 'u')?;
-                    self.expect(st, 'l')?;
-                    self.expect(st, 'l')?;
-                    return Ok(TK_NULL);
-                }
-                't' => {
-                    self.next();
-                    self.expect(st, 'r')?;
-                    self.expect(st, 'u')?;
-                    self.expect(st, 'e')?;
-                    return Ok(TK_TRUE);
-                }
-                c if c == EOF => return Ok(0),
-                _ => {}
+            ',' | ':' | '[' | ']' | '{' | '}' => {
+                let t = self.lexchar as i32;
+                self.next();
+                return Ok(t);
             }
+            '"' => {
+                self.next();
+                return self.lexjsonstring(st);
+            }
+            'f' => {
+                self.next();
+                self.expect(st, 'a')?;
+                self.expect(st, 'l')?;
+                self.expect(st, 's')?;
+                self.expect(st, 'e')?;
+                return Ok(TK_FALSE);
+            }
+            'n' => {
+                self.next();
+                self.expect(st, 'u')?;
+                self.expect(st, 'l')?;
+                self.expect(st, 'l')?;
+                return Ok(TK_NULL);
+            }
+            't' => {
+                self.next();
+                self.expect(st, 'r')?;
+                self.expect(st, 'u')?;
+                self.expect(st, 'e')?;
+                return Ok(TK_TRUE);
+            }
+            c if c == EOF => return Ok(0),
+            _ => {}
+        }
 
-            if ('\u{20}'..='\u{7E}').contains(&self.lexchar) {
-                return self.syntax_error(
-                    st,
-                    &format!("unexpected character: '{}'", self.lexchar),
-                );
-            }
-            self.syntax_error(
-                st,
-                &format!("unexpected character: \\u{:04X}", self.lexchar as u32),
-            )
+        if ('\u{20}'..='\u{7E}').contains(&self.lexchar) {
+            return self.syntax_error(st, &format!("unexpected character: '{}'", self.lexchar));
+        }
+        self.syntax_error(
+            st,
+            &format!("unexpected character: \\u{:04X}", self.lexchar as u32),
+        )
     }
 }
