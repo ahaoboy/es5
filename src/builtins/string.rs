@@ -3,7 +3,7 @@
 use super::propf;
 use crate::builtins::make_es6_iterator;
 use crate::object::{Class, Payload};
-use crate::state::{State, R, JS_STRLIMIT};
+use crate::state::{JS_STRLIMIT, R, State};
 use crate::utf;
 use crate::value::{JS_DONTENUM, JS_REGEXP_G, Value};
 use std::rc::Rc;
@@ -161,7 +161,11 @@ fn sp_slice(st: &mut State) -> R<()> {
     let str_ = checkstring(st, 0)?;
     let len = utf::utflen(&str_) as i32;
     let mut s = st.tointeger(1)?;
-    let mut e = if st.isdefined(2) { st.tointeger(2)? } else { len };
+    let mut e = if st.isdefined(2) {
+        st.tointeger(2)?
+    } else {
+        len
+    };
 
     s = if s < 0 { s + len } else { s };
     e = if e < 0 { e + len } else { e };
@@ -180,11 +184,46 @@ fn sp_slice(st: &mut State) -> R<()> {
     }
 }
 
+fn sp_substr(st: &mut State) -> R<()> {
+    let str_ = checkstring(st, 0)?;
+    let len = utf::utflen(&str_) as i32;
+
+    let mut s = st.tointeger(1)?;
+
+    if s < 0 {
+        s = (len + s).max(0);
+    }
+
+    if s >= len {
+        return st.push_literal("");
+    }
+
+    let l = if st.isdefined(2) {
+        st.tointeger(2)?
+    } else {
+        len - s
+    };
+
+    if l <= 0 {
+        return st.push_literal("");
+    }
+
+    let count = l.min(len - s);
+
+    let out = utf::substring_utf16(&str_, s as usize, count as usize);
+
+    st.push_string(&out)
+}
+
 fn sp_substring(st: &mut State) -> R<()> {
     let str_ = checkstring(st, 0)?;
     let len = utf::utflen(&str_) as i32;
     let mut s = st.tointeger(1)?;
-    let mut e = if st.isdefined(2) { st.tointeger(2)? } else { len };
+    let mut e = if st.isdefined(2) {
+        st.tointeger(2)?
+    } else {
+        len
+    };
 
     s = s.clamp(0, len);
     e = e.clamp(0, len);
@@ -880,6 +919,7 @@ pub fn init(st: &mut State) {
         propf(st, "String.prototype.slice", sp_slice, 2).unwrap();
         propf(st, "String.prototype.split", sp_split, 2).unwrap();
         propf(st, "String.prototype.substring", sp_substring, 2).unwrap();
+        propf(st, "String.prototype.substr", sp_substr, 2).unwrap();
         propf(st, "String.prototype.toLowerCase", sp_tolowercase, 0).unwrap();
         propf(st, "String.prototype.toLocaleLowerCase", sp_tolowercase, 0).unwrap();
         propf(st, "String.prototype.toUpperCase", sp_touppercase, 0).unwrap();
@@ -908,7 +948,8 @@ pub fn init(st: &mut State) {
         // ES6 iterator
         propf(st, "String.prototype.@@iterator", sp_iterator, 0).unwrap();
     }
-    st.newcconstructor(jsb_string, jsb_new_string, "String", 0).unwrap();
+    st.newcconstructor(jsb_string, jsb_new_string, "String", 0)
+        .unwrap();
     {
         propf(st, "String.fromCharCode", s_fromcharcode, 0).unwrap();
     }
