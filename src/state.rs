@@ -9,12 +9,12 @@
 use crate::compile;
 use crate::number;
 use crate::object::{
-    ArrayData, CFunctionData, Class, ErrorData, FunRef, FunctionData, Heap, ObjRef, Payload,
-    StringData, TraceFrame, NONE,
+    ArrayData, CFunctionData, Class, ErrorData, FunRef, FunctionData, Heap, NONE, ObjRef, Payload,
+    StringData, TraceFrame,
 };
 use crate::parse;
 use crate::utf;
-use crate::value::{Hint, Value, JS_DONTCONF, JS_DONTENUM, JS_READONLY};
+use crate::value::{Hint, JS_DONTCONF, JS_DONTENUM, JS_READONLY, Value};
 use std::rc::Rc;
 
 /// Result type used throughout the engine; `Err` is a thrown JS exception.
@@ -176,9 +176,9 @@ pub struct State {
     pub seed: u32,
 
     pub nextref: u32,
-    pub r: ObjRef, // registry of hidden values
-    pub g: ObjRef, // the global object
-    pub e: ObjRef, // current environment scope
+    pub r: ObjRef,  // registry of hidden values
+    pub g: ObjRef,  // the global object
+    pub e: ObjRef,  // current environment scope
     pub ge: ObjRef, // global environment scope
 
     // execution stack
@@ -511,11 +511,7 @@ impl State {
     }
 
     pub fn rot(&mut self, n: i32) {
-        let tmp = self.stack[self.top - 1].clone();
-        for i in 1..n as usize {
-            self.stack[self.top - i] = self.stack[self.top - i - 1].clone();
-        }
-        self.stack[self.top - n as usize] = tmp;
+        self.stack[self.top - n as usize..self.top].rotate_right(1);
     }
 
     // ------------------------------------------------------------------
@@ -753,19 +749,25 @@ impl State {
     }
 
     pub fn new_boolean_object(&mut self, v: bool) -> ObjRef {
-        let o = self.heap.alloc_object(Class::Boolean, Some(self.protos.boolean));
+        let o = self
+            .heap
+            .alloc_object(Class::Boolean, Some(self.protos.boolean));
         self.heap.obj_mut(o).payload = Payload::Boolean(v);
         o
     }
 
     pub fn new_number_object(&mut self, v: f64) -> ObjRef {
-        let o = self.heap.alloc_object(Class::Number, Some(self.protos.number));
+        let o = self
+            .heap
+            .alloc_object(Class::Number, Some(self.protos.number));
         self.heap.obj_mut(o).payload = Payload::Number(v);
         o
     }
 
     pub fn new_string_object(&mut self, v: &str) -> ObjRef {
-        let o = self.heap.alloc_object(Class::String, Some(self.protos.string));
+        let o = self
+            .heap
+            .alloc_object(Class::String, Some(self.protos.string));
         let length = utf::utflen(v) as i32;
         let rc = self.heap.intern(v);
         self.heap.obj_mut(o).payload = Payload::String(StringData { string: rc, length });
@@ -821,7 +823,9 @@ impl State {
     /// js_newfunction: create a JS closure object with length/prototype.
     pub fn newfunction(&mut self, fun: u32, scope: ObjRef) -> R<()> {
         let numparams = self.heap.fun(fun).numparams;
-        let o = self.heap.alloc_object(Class::Function, Some(self.protos.function));
+        let o = self
+            .heap
+            .alloc_object(Class::Function, Some(self.protos.function));
         self.heap.obj_mut(o).payload = Payload::Function(FunctionData { fun, scope });
         self.push_object(o)?;
         self.push_number(numparams as f64)?;
@@ -841,7 +845,9 @@ impl State {
     }
 
     pub fn newcfunctionx(&mut self, cfun: CFunction, name: &str, length: i32) -> R<()> {
-        let o = self.heap.alloc_object(Class::CFunction, Some(self.protos.function));
+        let o = self
+            .heap
+            .alloc_object(Class::CFunction, Some(self.protos.function));
         self.heap.obj_mut(o).payload = Payload::CFunction(CFunctionData {
             name: self.heap.intern(name),
             function: cfun,
@@ -870,7 +876,9 @@ impl State {
         name: &str,
         length: i32,
     ) -> R<()> {
-        let o = self.heap.alloc_object(Class::CFunction, Some(self.protos.function));
+        let o = self
+            .heap
+            .alloc_object(Class::CFunction, Some(self.protos.function));
         self.heap.obj_mut(o).payload = Payload::CFunction(CFunctionData {
             name: self.heap.intern(name),
             function: cfun,
@@ -1054,7 +1062,15 @@ impl State {
     pub fn initvar(&mut self, name: &str, idx: i32) -> R<()> {
         let vars = self.heap.env(self.e).variables;
         let v = self.stackidx(idx).clone();
-        self.def_property_raw(vars, name, JS_DONTENUM | JS_DONTCONF, Some(v), None, None, false)
+        self.def_property_raw(
+            vars,
+            name,
+            JS_DONTENUM | JS_DONTCONF,
+            Some(v),
+            None,
+            None,
+            false,
+        )
     }
 
     pub fn hasvar(&mut self, name: &str) -> R<bool> {
@@ -1190,22 +1206,21 @@ impl State {
                     return Ok(true);
                 }
                 let simple = matches!(&self.heap.obj(obj).payload, Payload::Array(a) if a.simple);
-                if simple
-                    && let Some(k) = is_array_index(name) {
-                        let flat_len = match &self.heap.obj(obj).payload {
-                            Payload::Array(a) => a.flat.len(),
-                            _ => 0,
+                if simple && let Some(k) = is_array_index(name) {
+                    let flat_len = match &self.heap.obj(obj).payload {
+                        Payload::Array(a) => a.flat.len(),
+                        _ => 0,
+                    };
+                    if k >= 0 && (k as usize) < flat_len {
+                        let v = match &self.heap.obj(obj).payload {
+                            Payload::Array(a) => a.flat[k as usize].clone(),
+                            _ => Value::Undefined,
                         };
-                        if k >= 0 && (k as usize) < flat_len {
-                            let v = match &self.heap.obj(obj).payload {
-                                Payload::Array(a) => a.flat[k as usize].clone(),
-                                _ => Value::Undefined,
-                            };
-                            self.push_value(v)?;
-                            return Ok(true);
-                        }
-                        return Ok(false);
+                        self.push_value(v)?;
+                        return Ok(true);
                     }
+                    return Ok(false);
+                }
             }
             Class::String => {
                 let (s, slen) = match &self.heap.obj(obj).payload {
@@ -1217,9 +1232,11 @@ impl State {
                     return Ok(true);
                 }
                 if let Some(k) = is_array_index(name)
-                    && k >= 0 && k < slen {
-                        return self.push_rune(utf::runeat(&s, k as usize)).map(|_| true);
-                    }
+                    && k >= 0
+                    && k < slen
+                {
+                    return self.push_rune(utf::runeat(&s, k as usize)).map(|_| true);
+                }
             }
             Class::Regexp => {
                 let matched = matches!(
@@ -1234,7 +1251,9 @@ impl State {
                     match name {
                         "source" => self.push_string_rc(source)?,
                         "global" => self.push_boolean(flags & crate::value::JS_REGEXP_G != 0)?,
-                        "ignoreCase" => self.push_boolean(flags & crate::value::JS_REGEXP_I != 0)?,
+                        "ignoreCase" => {
+                            self.push_boolean(flags & crate::value::JS_REGEXP_I != 0)?
+                        }
                         "multiline" => self.push_boolean(flags & crate::value::JS_REGEXP_M != 0)?,
                         "lastIndex" => self.push_number(last as f64)?,
                         _ => unreachable!(),
@@ -1354,7 +1373,8 @@ impl State {
                     if newlen > JS_ARRAYLIMIT {
                         return self.range_error("array too large");
                     }
-                    let simple = matches!(&self.heap.obj(obj).payload, Payload::Array(a) if a.simple);
+                    let simple =
+                        matches!(&self.heap.obj(obj).payload, Payload::Array(a) if a.simple);
                     if simple {
                         match &mut self.heap.obj_mut(obj).payload {
                             Payload::Array(a) => {
@@ -1371,7 +1391,8 @@ impl State {
                     return Ok(());
                 }
                 if let Some(k) = is_array_index(name) {
-                    let simple = matches!(&self.heap.obj(obj).payload, Payload::Array(a) if a.simple);
+                    let simple =
+                        matches!(&self.heap.obj(obj).payload, Payload::Array(a) if a.simple);
                     if simple {
                         let flat_len = match &self.heap.obj(obj).payload {
                             Payload::Array(a) => a.flat.len(),
@@ -1383,14 +1404,16 @@ impl State {
                         } else {
                             self.unflatten_array(obj);
                             if let Payload::Array(a) = &mut self.heap.obj_mut(obj).payload
-                                && a.length < k + 1 {
-                                    a.length = k + 1;
-                                }
+                                && a.length < k + 1
+                            {
+                                a.length = k + 1;
+                            }
                         }
                     } else if let Payload::Array(a) = &mut self.heap.obj_mut(obj).payload
-                        && a.length < k + 1 {
-                            a.length = k + 1;
-                        }
+                        && a.length < k + 1
+                    {
+                        a.length = k + 1;
+                    }
                 }
             }
             Class::String => {
@@ -1407,21 +1430,17 @@ impl State {
                     }
                 }
             }
-            Class::Regexp => {
-                match name {
-                    "source" | "global" | "ignoreCase" | "multiline" => {
-                        return self.readonly(name)
+            Class::Regexp => match name {
+                "source" | "global" | "ignoreCase" | "multiline" => return self.readonly(name),
+                "lastIndex" => {
+                    let v = self.tointeger(-1)?;
+                    if let Payload::Regexp(r) = &mut self.heap.obj_mut(obj).payload {
+                        r.last = v as i64;
                     }
-                    "lastIndex" => {
-                        let v = self.tointeger(-1)?;
-                        if let Payload::Regexp(r) = &mut self.heap.obj_mut(obj).payload {
-                            r.last = v as i64;
-                        }
-                        return Ok(());
-                    }
-                    _ => {}
+                    return Ok(());
                 }
-            }
+                _ => {}
+            },
             Class::Arguments => {
                 // mapped arguments: alias index writes to the parameters
                 if let Some(k) = is_array_index(name) {
@@ -1503,7 +1522,10 @@ impl State {
         } else {
             // update existing own property
             let v = self.stackidx(-1).clone();
-            let p = self.heap.set_property(obj, name).expect("existing property");
+            let p = self
+                .heap
+                .set_property(obj, name)
+                .expect("existing property");
             if p.atts & JS_READONLY == 0 {
                 p.value = v;
             } else {
@@ -1577,7 +1599,10 @@ impl State {
                 }
             }
             Class::Regexp => {
-                if matches!(name, "source" | "global" | "ignoreCase" | "multiline" | "lastIndex") {
+                if matches!(
+                    name,
+                    "source" | "global" | "ignoreCase" | "multiline" | "lastIndex"
+                ) {
                     return self.readonly_or_throw(name, throw);
                 }
             }
@@ -1656,7 +1681,10 @@ impl State {
                 }
             }
             Class::Regexp => {
-                if matches!(name, "source" | "global" | "ignoreCase" | "multiline" | "lastIndex") {
+                if matches!(
+                    name,
+                    "source" | "global" | "ignoreCase" | "multiline" | "lastIndex"
+                ) {
                     return self.dontconf(name);
                 }
             }
@@ -1664,10 +1692,11 @@ impl State {
                 // deleting a mapped index only breaks the link (ES5.1 10.6)
                 if let Some(k) = is_array_index(name)
                     && k >= 0
-                        && let Payload::Arguments(a) = &mut self.heap.obj_mut(obj).payload
-                            && (k as u32) < a.mapped {
-                                a.deleted.insert(k as u32);
-                            }
+                    && let Payload::Arguments(a) = &mut self.heap.obj_mut(obj).payload
+                    && (k as u32) < a.mapped
+                {
+                    a.deleted.insert(k as u32);
+                }
             }
             _ => {}
         }
@@ -1968,20 +1997,21 @@ impl State {
             } else {
                 // non-strict: mapped arguments object (indices alias the
                 // formal parameters, ES5.1 10.6)
-                let ao = self.heap.alloc_object(Class::Arguments, Some(self.protos.object));
+                let ao = self
+                    .heap
+                    .alloc_object(Class::Arguments, Some(self.protos.object));
                 {
                     let vars = self.heap.env(new_scope).variables;
                     let _ = vars;
                     let mapped = (n.min(numparams)) as u32;
-                    self.heap.obj_mut(ao).payload = Payload::Arguments(
-                        crate::object::ArgumentsData {
+                    self.heap.obj_mut(ao).payload =
+                        Payload::Arguments(crate::object::ArgumentsData {
                             env: new_scope,
                             fun: f,
                             mapped,
                             n: n as u32,
                             deleted: std::collections::BTreeSet::new(),
-                        },
-                    );
+                        });
                 }
                 self.push_object(ao)?;
                 self.push_number(n as f64)?;
@@ -2206,26 +2236,27 @@ impl State {
         // built-in constructors create their own objects, give them a 'null' this
         if self.heap.obj(obj).class == Class::CFunction
             && let Payload::CFunction(cd) = &self.heap.obj(obj).payload
-                && let Some(ccon) = cd.constructor {
-                    let (name, length) = (cd.name.clone(), cd.length);
-                    let savebot = self.bot;
-                    self.push_null()?;
-                    if n > 0 {
-                        self.rot(n as i32 + 1);
-                    }
-                    self.bot = self.top - n - 1;
-                    self.pushtrace(StackTrace {
-                        fun: NONE,
-                        name: Some(name),
-                        line: 0,
-                        col: 0,
-                        stack: self.bot,
-                    })?;
-                    let r = self.call_cfunction(n, length, ccon);
-                    self.tracetop -= 1;
-                    self.bot = savebot;
-                    return r;
-                }
+            && let Some(ccon) = cd.constructor
+        {
+            let (name, length) = (cd.name.clone(), cd.length);
+            let savebot = self.bot;
+            self.push_null()?;
+            if n > 0 {
+                self.rot(n as i32 + 1);
+            }
+            self.bot = self.top - n - 1;
+            self.pushtrace(StackTrace {
+                fun: NONE,
+                name: Some(name),
+                line: 0,
+                col: 0,
+                stack: self.bot,
+            })?;
+            let r = self.call_cfunction(n, length, ccon);
+            self.tracetop -= 1;
+            self.bot = savebot;
+            return r;
+        }
 
         // extract the function object's prototype property
         self.getproperty(-(n as i32) - 1, "prototype")?;
@@ -2357,7 +2388,9 @@ impl State {
             self.pop(2);
             STATS.concat_calls.fetch_add(1, Ordering::Relaxed);
             let mut s = String::with_capacity(sa.len() + sb.len());
-            STATS.concat_bytes.fetch_add((sa.len() + sb.len()) as u64, Ordering::Relaxed);
+            STATS
+                .concat_bytes
+                .fetch_add((sa.len() + sb.len()) as u64, Ordering::Relaxed);
             s.push_str(&sa);
             s.push_str(&sb);
             // move the buffer into the arena (no second copy)
@@ -2386,7 +2419,16 @@ impl State {
             if x.is_nan() || y.is_nan() {
                 return Ok((0, false));
             }
-            Ok((if x < y { -1 } else if x > y { 1 } else { 0 }, true))
+            Ok((
+                if x < y {
+                    -1
+                } else if x > y {
+                    1
+                } else {
+                    0
+                },
+                true,
+            ))
         }
     }
 
@@ -2475,11 +2517,7 @@ impl State {
         };
         let fun = compile::compile_script(self, &ast, default_strict)?;
         let scope = if iseval {
-            if self.strict {
-                self.e
-            } else {
-                NONE
-            }
+            if self.strict { self.e } else { NONE }
         } else {
             self.ge
         };
