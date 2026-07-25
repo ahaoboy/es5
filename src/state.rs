@@ -429,10 +429,7 @@ impl State {
     }
 
     pub fn pop(&mut self, n: usize) {
-        self.top = self.top.saturating_sub(n);
-        if self.top < self.bot {
-            self.top = self.bot;
-        }
+        self.top = self.top.saturating_sub(n).max(self.bot);
     }
 
     pub fn pop_value(&mut self) -> Value {
@@ -446,9 +443,7 @@ impl State {
             Some(i) if i >= self.bot => i,
             _ => return self.error("stack error!"),
         };
-        for j in i..self.top - 1 {
-            self.stack[j] = self.stack[j + 1].clone();
-        }
+        self.stack[i..self.top].rotate_left(1);
         self.top -= 1;
         Ok(())
     }
@@ -459,7 +454,7 @@ impl State {
             _ => return self.error("stack error!"),
         };
         self.top -= 1;
-        self.stack[i] = self.stack[self.top].clone();
+        self.stack.swap(i, self.top);
         Ok(())
     }
 
@@ -500,14 +495,14 @@ impl State {
 
     pub fn rot2pop1(&mut self) {
         // A B -> B
-        self.stack[self.top - 2] = self.stack[self.top - 1].clone();
         self.top -= 1;
+        self.stack.swap(self.top - 1, self.top);
     }
 
     pub fn rot3pop2(&mut self) {
         // A B C -> C
-        self.stack[self.top - 3] = self.stack[self.top - 1].clone();
         self.top -= 2;
+        self.stack.swap(self.top - 1, self.top + 1);
     }
 
     pub fn rot(&mut self, n: i32) {
