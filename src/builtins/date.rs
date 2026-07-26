@@ -716,6 +716,47 @@ fn dp_setutcfullyear(st: &mut State) -> R<()> {
     js_setdate(st, 0, v)
 }
 
+// Deprecated methods (for compatibility)
+
+/// Date.prototype.getYear() - Deprecated
+/// Returns year - 1900 for years >= 1900, otherwise returns the actual year
+fn dp_getyear(st: &mut State) -> R<()> {
+    let t = js_todate(st, 0)?;
+    if t.is_nan() {
+        return st.push_number(f64::NAN);
+    }
+    let year = year_from_time(local_time(t));
+    st.push_number((year - 1900) as f64)
+}
+
+/// Date.prototype.setYear(yearValue) - Deprecated
+/// If yearValue is between 0-99, adds 1900; otherwise uses the value as-is
+fn dp_setyear(st: &mut State) -> R<()> {
+    let t0 = js_todate(st, 0)?;
+    let t = if t0.is_nan() { 0.0 } else { local_time(t0) };
+    let mut y = st.tonumber(1)?;
+
+    // If year is NaN, return NaN
+    if y.is_nan() {
+        return js_setdate(st, 0, f64::NAN);
+    }
+
+    // Handle 2-digit years: 0-99 becomes 1900-1999
+    if (0.0..=99.0).contains(&y) {
+        y += 1900.0;
+    }
+
+    let m = month_from_time(t) as f64;
+    let d = date_from_time(t) as f64;
+    let v = utc(make_date(make_day(y, m, d), time_within_day(t)));
+    js_setdate(st, 0, v)
+}
+
+/// Date.prototype.toGMTString() - Deprecated alias for toUTCString
+fn dp_togmtstring(st: &mut State) -> R<()> {
+    dp_toutcstring(st)
+}
+
 fn dp_tojson(st: &mut State) -> R<()> {
     st.copy(0)?;
     st.toprimitive(-1, crate::value::Hint::Number)?;
@@ -779,6 +820,11 @@ pub fn init(st: &mut State) {
         propf(st, "Date.prototype.setUTCMonth", dp_setutcmonth, 2).unwrap();
         propf(st, "Date.prototype.setFullYear", dp_setfullyear, 3).unwrap();
         propf(st, "Date.prototype.setUTCFullYear", dp_setutcfullyear, 3).unwrap();
+
+        // Deprecated methods (for compatibility)
+        propf(st, "Date.prototype.getYear", dp_getyear, 0).unwrap();
+        propf(st, "Date.prototype.setYear", dp_setyear, 1).unwrap();
+        propf(st, "Date.prototype.toGMTString", dp_togmtstring, 0).unwrap();
 
         // ES5
         propf(st, "Date.prototype.toISOString", dp_toisostring, 0).unwrap();
