@@ -7,6 +7,7 @@ use crate::state::{JS_STRLIMIT, R, State};
 use crate::utf;
 use crate::value::{JS_DONTENUM, JS_REGEXP_G, Value};
 use compact_str::CompactString;
+use thin_vec::ThinVec;
 
 /// checkstring: ToString, but null/undefined is a TypeError.
 fn checkstring(st: &mut State, idx: i32) -> R<CompactString> {
@@ -849,7 +850,7 @@ fn sp_split(st: &mut State) -> R<()> {
 fn sp_iterator(st: &mut State) -> R<()> {
     let s = checkstring(st, 0)?;
     let chars: Vec<char> = s.chars().collect();
-    let values: Vec<Value> = chars
+    let values: ThinVec<Value> = chars
         .iter()
         .map(|c| {
             let mut out = String::new();

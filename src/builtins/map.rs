@@ -1,5 +1,7 @@
 //! Map constructor and Map.prototype (ES6).
 
+use thin_vec::ThinVec;
+
 use crate::builtins::make_es6_iterator;
 use crate::object::{Class, MapData, Payload};
 use crate::state::{State, R};
@@ -39,15 +41,15 @@ fn m_constructor(st: &mut State) -> R<()> {
         let simple = matches!(&st.heap.obj(src).payload, Payload::Array(a) if a.simple);
         if simple {
             let flat = match &st.heap.obj(src).payload {
-                Payload::Array(a) => a.flat.to_vec(),
-                _ => vec![],
+                Payload::Array(a) => a.flat.clone(),
+                _ => ThinVec::new(),
             };
             for pair_val in flat {
                 if let Value::Object(pa) = pair_val
                     && st.heap.obj(pa).class == Class::Array {
                         let pair = match &st.heap.obj(pa).payload {
-                            Payload::Array(a) => a.flat.to_vec(),
-                            _ => vec![],
+                            Payload::Array(a) => a.flat.clone(),
+                            _ => ThinVec::new(),
                         };
                         if pair.len() >= 2 {
                             let k = pair[0].clone();
@@ -68,8 +70,8 @@ fn m_constructor(st: &mut State) -> R<()> {
                     if let Value::Object(pa) = &pair_val
                         && st.heap.obj(*pa).class == Class::Array {
                             let pair = match &st.heap.obj(*pa).payload {
-                                Payload::Array(a) => a.flat.to_vec(),
-                                _ => vec![],
+                                Payload::Array(a) => a.flat.clone(),
+                                _ => ThinVec::new(),
                             };
                             if pair.len() >= 2 {
                                 let k = pair[0].clone();
@@ -177,16 +179,26 @@ fn m_foreach(st: &mut State) -> R<()> {
         return st.type_error("Map.prototype.forEach: callback is not callable");
     }
     let obj = get_map_data(st, 0)?;
-    let entries: Vec<_> = match &st.heap.obj(obj).payload {
-        Payload::Map(m) => m.entries.to_vec(),
+
+    // Get length first, then iterate by index to avoid cloning the entire vector
+    let len = match &st.heap.obj(obj).payload {
+        Payload::Map(m) => m.entries.len(),
         _ => return Ok(()),
     };
+
     let this_arg = if st.isdefined(2) {
         st.stackidx(2).clone()
     } else {
         Value::Undefined
     };
-    for (k, v) in entries {
+
+    for i in 0..len {
+        // Access entry by index each iteration
+        let (k, v) = match &st.heap.obj(obj).payload {
+            Payload::Map(m) => m.entries.get(i).map(|(k, v)| (k.clone(), v.clone())),
+            _ => None,
+        }.unwrap_or((Value::Undefined, Value::Undefined));
+
         st.copy(1)?; // callback
         st.push_value(this_arg.clone())?;
         st.push_value(v)?;
@@ -201,30 +213,30 @@ fn m_foreach(st: &mut State) -> R<()> {
 fn m_keys(st: &mut State) -> R<()> {
     let obj = get_map_data(st, 0)?;
     let entries = match &st.heap.obj(obj).payload {
-        Payload::Map(m) => m.entries.to_vec(),
-        _ => vec![],
+        Payload::Map(m) => m.entries.clone(),
+        _ => ThinVec::new(),
     };
-    let values: Vec<Value> = entries.into_iter().map(|(k, _)| k).collect();
+    let values: ThinVec<Value> = entries.into_iter().map(|(k, _)| k).collect();
     make_es6_iterator(st, values)
 }
 
 fn m_values(st: &mut State) -> R<()> {
     let obj = get_map_data(st, 0)?;
     let entries = match &st.heap.obj(obj).payload {
-        Payload::Map(m) => m.entries.to_vec(),
-        _ => vec![],
+        Payload::Map(m) => m.entries.clone(),
+        _ => ThinVec::new(),
     };
-    let values: Vec<Value> = entries.into_iter().map(|(_, v)| v).collect();
+    let values: ThinVec<Value> = entries.into_iter().map(|(_, v)| v).collect();
     make_es6_iterator(st, values)
 }
 
 fn m_entries(st: &mut State) -> R<()> {
     let obj = get_map_data(st, 0)?;
     let entries = match &st.heap.obj(obj).payload {
-        Payload::Map(m) => m.entries.to_vec(),
-        _ => vec![],
+        Payload::Map(m) => m.entries.clone(),
+        _ => ThinVec::new(),
     };
-    let values: Vec<Value> = entries
+    let values: ThinVec<Value> = entries
         .into_iter()
         .map(|(k, v)| {
             let pa = st.heap.alloc_object(Class::Array, Some(st.protos.array));

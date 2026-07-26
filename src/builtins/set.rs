@@ -1,5 +1,7 @@
 //! Set constructor and Set.prototype (ES6).
 
+use thin_vec::ThinVec;
+
 use crate::builtins::make_es6_iterator;
 use crate::object::{Class, ObjRef, Payload, SetData};
 use crate::state::{State, R};
@@ -30,7 +32,7 @@ fn s_constructor(st: &mut State) -> R<()> {
     let set_obj = st.heap.alloc_object(Class::Set, Some(set_proto(st)));
     st.heap.obj_mut(set_obj).payload = Payload::Set(SetData { values: Vec::new().into() });
 
-    let mut values: Vec<Value> = Vec::new();
+    let mut values: ThinVec<Value> = ThinVec::new();
 
     // optional iterable: iterate by array indices
     if st.isdefined(1) && !st.isundefined(1) && !st.isnull(1) {
@@ -38,8 +40,8 @@ fn s_constructor(st: &mut State) -> R<()> {
         let simple = matches!(&st.heap.obj(src).payload, Payload::Array(a) if a.simple);
         if simple {
             let flat = match &st.heap.obj(src).payload {
-                Payload::Array(a) => a.flat.to_vec(),
-                _ => vec![],
+                Payload::Array(a) => a.flat.clone(),
+                _ => ThinVec::new(),
             };
             for v in flat {
                 if !values.iter().any(|x| same_set_value(x, &v)) {
@@ -60,7 +62,7 @@ fn s_constructor(st: &mut State) -> R<()> {
     }
 
     if let Payload::Set(s) = &mut st.heap.obj_mut(set_obj).payload {
-        s.values = values.into();
+        s.values = values;
     }
     st.push_object(set_obj)
 }
@@ -132,16 +134,26 @@ fn s_foreach(st: &mut State) -> R<()> {
         return st.type_error("Set.prototype.forEach: callback is not callable");
     }
     let obj = get_set_data(st, 0)?;
-    let values: Vec<_> = match &st.heap.obj(obj).payload {
-        Payload::Set(s) => s.values.to_vec(),
+
+    // Get length first, then iterate by index to avoid cloning the entire vector
+    let len = match &st.heap.obj(obj).payload {
+        Payload::Set(s) => s.values.len(),
         _ => return Ok(()),
     };
+
     let this_arg = if st.isdefined(2) {
         st.stackidx(2).clone()
     } else {
         Value::Undefined
     };
-    for v in values {
+
+    for i in 0..len {
+        // Access value by index each iteration
+        let v = match &st.heap.obj(obj).payload {
+            Payload::Set(s) => s.values.get(i).cloned(),
+            _ => None,
+        }.unwrap_or(Value::Undefined);
+
         st.copy(1)?; // callback
         st.push_value(this_arg.clone())?;
         st.push_value(v.clone())?; // value (both as v and k)
@@ -156,8 +168,8 @@ fn s_foreach(st: &mut State) -> R<()> {
 fn s_values_fn(st: &mut State) -> R<()> {
     let obj = get_set_data(st, 0)?;
     let values = match &st.heap.obj(obj).payload {
-        Payload::Set(s) => s.values.to_vec(),
-        _ => vec![],
+        Payload::Set(s) => s.values.clone(),
+        _ => ThinVec::new(),
     };
     make_es6_iterator(st, values)
 }
@@ -165,10 +177,10 @@ fn s_values_fn(st: &mut State) -> R<()> {
 fn s_entries_fn(st: &mut State) -> R<()> {
     let obj = get_set_data(st, 0)?;
     let values = match &st.heap.obj(obj).payload {
-        Payload::Set(s) => s.values.to_vec(),
-        _ => vec![],
+        Payload::Set(s) => s.values.clone(),
+        _ => ThinVec::new(),
     };
-    let vals: Vec<Value> = values
+    let vals: ThinVec<Value> = values
         .into_iter()
         .map(|v| {
             let pa = st.heap.alloc_object(Class::Array, Some(st.protos.array));

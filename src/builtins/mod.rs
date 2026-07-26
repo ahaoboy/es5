@@ -15,6 +15,7 @@ pub mod regexp;
 pub mod repr;
 pub mod set;
 pub mod string;
+use thin_vec::ThinVec;
 #[cfg(feature = "symbol")]
 pub mod symbol;
 
@@ -54,9 +55,9 @@ fn es6_iter_next(st: &mut State) -> R<()> {
 }
 
 /// Create an ES6 iterator object with a snapshot of values.
-pub fn make_es6_iterator(st: &mut State, values: Vec<Value>) -> R<()> {
+pub fn make_es6_iterator(st: &mut State, values: ThinVec<Value>) -> R<()> {
     let iter = st.heap.alloc_object(Class::Iterator, Some(st.protos.object));
-    st.heap.obj_mut(iter).payload = Payload::ES6Iterator(ES6IteratorData { values: values.into(), pos: 0 });
+    st.heap.obj_mut(iter).payload = Payload::ES6Iterator(ES6IteratorData { values, pos: 0 });
     st.push_object(iter)?;
     st.newcfunction(es6_iter_next, "next", 0)?;
     st.defproperty(-2, "next", JS_DONTENUM)?;

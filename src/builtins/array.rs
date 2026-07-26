@@ -1,5 +1,7 @@
 //! Array constructor and Array.prototype (jsarray.c).
 
+use thin_vec::ThinVec;
+
 use super::propf;
 use crate::builtins::make_es6_iterator;
 use crate::object::{Class, Payload};
@@ -1002,13 +1004,13 @@ fn a_from(st: &mut State) -> R<()> {
     }
 
     // Array-like path: extract values first to avoid borrow conflicts
-    let flat: Vec<Value> = match &st.heap.obj(src).payload {
-        Payload::Array(a) => a.flat.to_vec(),
+    let flat: ThinVec<Value> = match &st.heap.obj(src).payload {
+        Payload::Array(a) => a.flat.clone(),
         _ => {
             let len = st.heap.get_property(src, "length")
                 .and_then(|p| match &p.value { Value::Number(n) => Some(*n as usize), _ => None })
                 .unwrap_or(0);
-            let mut v = Vec::with_capacity(len);
+            let mut v = ThinVec::with_capacity(len);
             for i in 0..len {
                 let val = st.heap.get_property(src, &i.to_string())
                     .map(|p| p.value.clone())
@@ -1048,8 +1050,8 @@ fn a_from(st: &mut State) -> R<()> {
 fn ap_values(st: &mut State) -> R<()> {
     let obj = st.toobject(0)?;
     let values = match &st.heap.obj(obj).payload {
-        Payload::Array(a) => a.flat.to_vec(),
-        _ => vec![],
+        Payload::Array(a) => a.flat.clone(),
+        _ => ThinVec::new(),
     };
     make_es6_iterator(st, values)
 }
@@ -1057,10 +1059,10 @@ fn ap_values(st: &mut State) -> R<()> {
 fn ap_entries(st: &mut State) -> R<()> {
     let obj = st.toobject(0)?;
     let flat = match &st.heap.obj(obj).payload {
-        Payload::Array(a) => a.flat.to_vec(),
-        _ => vec![],
+        Payload::Array(a) => a.flat.clone(),
+        _ => ThinVec::new(),
     };
-    let values: Vec<Value> = flat
+    let values: ThinVec<Value> = flat
         .into_iter()
         .enumerate()
         .map(|(i, val)| {
@@ -1082,7 +1084,7 @@ fn ap_keys(st: &mut State) -> R<()> {
         Payload::Array(a) => a.flat.len(),
         _ => 0,
     };
-    let values: Vec<Value> = (0..len).map(|i| Value::Number(i as f64)).collect();
+    let values: ThinVec<Value> = (0..len).map(|i| Value::Number(i as f64)).collect();
     make_es6_iterator(st, values)
 }
 

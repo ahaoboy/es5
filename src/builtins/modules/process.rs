@@ -3,6 +3,7 @@
 
 #![cfg(feature = "process")]
 
+
 use crate::state::{State, R};
 use crate::value::{JS_DONTENUM, Value};
 
@@ -116,13 +117,20 @@ fn fire_end_listeners(st: &mut State) -> R<()> {
     let end_arr = st.heap.get_property(listeners_obj, "end")
         .and_then(|p| p.value.as_object());
     if let Some(arr) = end_arr {
-        let listeners: Vec<Value> = match &st.heap.obj(arr).payload {
-            crate::object::Payload::Array(a) => a.flat.to_vec(),
-            _ => vec![],
+        // Use index-based iteration to avoid cloning the entire vector
+        let len = match &st.heap.obj(arr).payload {
+            crate::object::Payload::Array(a) => a.flat.len(),
+            _ => 0,
         };
-        for listener in &listeners {
-            if let Value::Object(_) = listener {
-                st.push_value(listener.clone())?;
+
+        for i in 0..len {
+            let listener = match &st.heap.obj(arr).payload {
+                crate::object::Payload::Array(a) => a.flat.get(i).cloned(),
+                _ => None,
+            };
+
+            if let Some(Value::Object(_)) = listener {
+                st.push_value(listener.unwrap())?;
                 st.push_undefined()?;
                 let _ = st.call(0);
                 st.pop(1);
@@ -182,13 +190,20 @@ pub fn poll_stdin(st: &mut State) -> R<()> {
 
     // Fire readable (no args)
     if let Some(arr) = readable_arr {
-        let listeners: Vec<Value> = match &st.heap.obj(arr).payload {
-            crate::object::Payload::Array(a) => a.flat.to_vec(),
-            _ => vec![],
+        // Use index-based iteration to avoid cloning the entire vector
+        let len = match &st.heap.obj(arr).payload {
+            crate::object::Payload::Array(a) => a.flat.len(),
+            _ => 0,
         };
-        for listener in &listeners {
-            if let Value::Object(_) = listener {
-                st.push_value(listener.clone())?;
+
+        for i in 0..len {
+            let listener = match &st.heap.obj(arr).payload {
+                crate::object::Payload::Array(a) => a.flat.get(i).cloned(),
+                _ => None,
+            };
+
+            if let Some(Value::Object(_)) = listener {
+                st.push_value(listener.unwrap())?;
                 st.push_undefined()?;
                 st.call(0)?;
                 st.pop(1);
@@ -212,13 +227,20 @@ pub fn poll_stdin(st: &mut State) -> R<()> {
             LINE_BUF.lock().unwrap().push_str(&key_str);
         }
         if let Some(line) = fire_line {
-            let listeners: Vec<Value> = match &st.heap.obj(arr).payload {
-                crate::object::Payload::Array(a) => a.flat.to_vec(),
-                _ => vec![],
+            // Use index-based iteration to avoid cloning the entire vector
+            let len = match &st.heap.obj(arr).payload {
+                crate::object::Payload::Array(a) => a.flat.len(),
+                _ => 0,
             };
-            for listener in &listeners {
-                if let Value::Object(_) = listener {
-                    st.push_value(listener.clone())?;
+
+            for i in 0..len {
+                let listener = match &st.heap.obj(arr).payload {
+                    crate::object::Payload::Array(a) => a.flat.get(i).cloned(),
+                    _ => None,
+                };
+
+                if let Some(Value::Object(_)) = listener {
+                    st.push_value(listener.unwrap())?;
                     st.push_undefined()?;
                     st.push_string(&line)?;
                     st.call(1)?;
