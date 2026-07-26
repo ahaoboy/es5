@@ -207,7 +207,7 @@ fn stream_of(st: &mut State, obj: ObjRef, name: &str) -> R<Option<ObjRef>> {
 /// stream.on(name, cb)
 fn stream_on(st: &mut State) -> R<()> {
     let name = st.tostring(1)?;
-    if name.as_ref() == "data" && st.iscallable(2) {
+    if name.as_ref() as &str == "data" && st.iscallable(2) {
         st.copy(2)?;
         st.defproperty(0, "__cb_data", JS_DONTENUM)?;
     }
@@ -228,7 +228,7 @@ fn stream_on(st: &mut State) -> R<()> {
 /// childprocess.on(name, cb) — handles "close".
 fn cp_on(st: &mut State) -> R<()> {
     let name = st.tostring(1)?;
-    if name.as_ref() == "close" && st.iscallable(2) {
+    if name.as_ref() as &str == "close" && st.iscallable(2) {
         st.copy(2)?;
         st.defproperty(0, "__cb_close", JS_DONTENUM)?;
     }

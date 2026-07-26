@@ -196,6 +196,9 @@ fn pump_timers(st: &mut State) {
     let _ = es5::builtins::modules::timers::pump(st);
 }
 
+#[cfg(not(any(feature = "modules", feature = "timers")))]
+fn pump_timers(_st: &mut State) {}
+
 fn read_stdin() -> Option<String> {
     let mut buf = Vec::new();
     match std::io::stdin().read_to_end(&mut buf) {

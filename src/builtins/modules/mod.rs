@@ -12,7 +12,6 @@ pub mod process;
 pub mod timers;
 
 use crate::state::{State, R};
-use std::rc::Rc;
 
 /// Build an Error value from an io::Error.
 pub(crate) fn io_error(
@@ -26,7 +25,7 @@ pub(crate) fn io_error(
         .unwrap_or(crate::value::Value::Null)
 }
 
-pub(crate) fn opt_str(st: &mut State, idx: i32) -> R<Option<Rc<str>>> {
+pub(crate) fn opt_str(st: &mut State, idx: i32) -> R<Option<compact_str::CompactString>> {
     if st.isundefined(idx) {
         Ok(None)
     } else {

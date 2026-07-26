@@ -28,7 +28,7 @@ fn set_proto(st: &State) -> ObjRef {
 
 fn s_constructor(st: &mut State) -> R<()> {
     let set_obj = st.heap.alloc_object(Class::Set, Some(set_proto(st)));
-    st.heap.obj_mut(set_obj).payload = Payload::Set(SetData { values: Vec::new() });
+    st.heap.obj_mut(set_obj).payload = Payload::Set(SetData { values: Vec::new().into() });
 
     let mut values: Vec<Value> = Vec::new();
 
@@ -38,7 +38,7 @@ fn s_constructor(st: &mut State) -> R<()> {
         let simple = matches!(&st.heap.obj(src).payload, Payload::Array(a) if a.simple);
         if simple {
             let flat = match &st.heap.obj(src).payload {
-                Payload::Array(a) => a.flat.clone(),
+                Payload::Array(a) => a.flat.to_vec(),
                 _ => vec![],
             };
             for v in flat {
@@ -60,7 +60,7 @@ fn s_constructor(st: &mut State) -> R<()> {
     }
 
     if let Payload::Set(s) = &mut st.heap.obj_mut(set_obj).payload {
-        s.values = values;
+        s.values = values.into();
     }
     st.push_object(set_obj)
 }
@@ -133,7 +133,7 @@ fn s_foreach(st: &mut State) -> R<()> {
     }
     let obj = get_set_data(st, 0)?;
     let values: Vec<_> = match &st.heap.obj(obj).payload {
-        Payload::Set(s) => s.values.clone(),
+        Payload::Set(s) => s.values.to_vec(),
         _ => return Ok(()),
     };
     let this_arg = if st.isdefined(2) {
@@ -156,7 +156,7 @@ fn s_foreach(st: &mut State) -> R<()> {
 fn s_values_fn(st: &mut State) -> R<()> {
     let obj = get_set_data(st, 0)?;
     let values = match &st.heap.obj(obj).payload {
-        Payload::Set(s) => s.values.clone(),
+        Payload::Set(s) => s.values.to_vec(),
         _ => vec![],
     };
     make_es6_iterator(st, values)
@@ -165,7 +165,7 @@ fn s_values_fn(st: &mut State) -> R<()> {
 fn s_entries_fn(st: &mut State) -> R<()> {
     let obj = get_set_data(st, 0)?;
     let values = match &st.heap.obj(obj).payload {
-        Payload::Set(s) => s.values.clone(),
+        Payload::Set(s) => s.values.to_vec(),
         _ => vec![],
     };
     let vals: Vec<Value> = values
@@ -175,7 +175,7 @@ fn s_entries_fn(st: &mut State) -> R<()> {
             st.heap.obj_mut(pa).payload = Payload::Array(crate::object::ArrayData {
                 length: 2,
                 simple: true,
-                flat: vec![v.clone(), v.clone()],
+                flat: vec![v.clone(), v.clone()].into(),
             });
             Value::Object(pa)
         })
@@ -194,7 +194,7 @@ fn same_set_value(a: &Value, b: &Value) -> bool {
             }
             x == y
         }
-        (Value::String(x), Value::String(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Value::String(x), Value::String(y)) => x == y,
         (Value::LitStr(x), Value::LitStr(y)) => x == y,
         (Value::Object(x), Value::Object(y)) => x == y,
         _ => false,

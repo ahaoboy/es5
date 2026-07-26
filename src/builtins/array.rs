@@ -994,7 +994,7 @@ fn a_from(st: &mut State) -> R<()> {
                 st.heap.obj_mut(a).payload = Payload::Array(crate::object::ArrayData {
                     length: result.len() as i32,
                     simple: true,
-                    flat: result,
+                    flat: result.into(),
                 });
             }
             return Ok(());
@@ -1003,7 +1003,7 @@ fn a_from(st: &mut State) -> R<()> {
 
     // Array-like path: extract values first to avoid borrow conflicts
     let flat: Vec<Value> = match &st.heap.obj(src).payload {
-        Payload::Array(a) => a.flat.clone(),
+        Payload::Array(a) => a.flat.to_vec(),
         _ => {
             let len = st.heap.get_property(src, "length")
                 .and_then(|p| match &p.value { Value::Number(n) => Some(*n as usize), _ => None })
@@ -1039,7 +1039,7 @@ fn a_from(st: &mut State) -> R<()> {
         st.heap.obj_mut(a).payload = Payload::Array(crate::object::ArrayData {
             length: result.len() as i32,
             simple: true,
-            flat: result,
+            flat: result.into(),
         });
     }
     Ok(())
@@ -1048,7 +1048,7 @@ fn a_from(st: &mut State) -> R<()> {
 fn ap_values(st: &mut State) -> R<()> {
     let obj = st.toobject(0)?;
     let values = match &st.heap.obj(obj).payload {
-        Payload::Array(a) => a.flat.clone(),
+        Payload::Array(a) => a.flat.to_vec(),
         _ => vec![],
     };
     make_es6_iterator(st, values)
@@ -1057,7 +1057,7 @@ fn ap_values(st: &mut State) -> R<()> {
 fn ap_entries(st: &mut State) -> R<()> {
     let obj = st.toobject(0)?;
     let flat = match &st.heap.obj(obj).payload {
-        Payload::Array(a) => a.flat.clone(),
+        Payload::Array(a) => a.flat.to_vec(),
         _ => vec![],
     };
     let values: Vec<Value> = flat
@@ -1068,7 +1068,7 @@ fn ap_entries(st: &mut State) -> R<()> {
             st.heap.obj_mut(pa).payload = Payload::Array(crate::object::ArrayData {
                 length: 2,
                 simple: true,
-                flat: vec![Value::Number(i as f64), val],
+                flat: vec![Value::Number(i as f64), val].into(),
             });
             Value::Object(pa)
         })

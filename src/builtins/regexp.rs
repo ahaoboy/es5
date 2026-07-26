@@ -9,10 +9,10 @@ use crate::regexp::Regexp;
 use crate::state::{State, R};
 use crate::utf;
 use crate::value::{JS_DONTENUM, JS_REGEXP_G, JS_REGEXP_I, JS_REGEXP_M};
-use std::rc::Rc;
+use compact_str::CompactString;
 
 /// Escape slashes in a pattern for the source property.
-fn escape_regexp(st: &mut State, pattern: &str) -> Rc<str> {
+fn escape_regexp(st: &mut State, pattern: &str) -> CompactString {
     if !pattern.contains('/') {
         return st.heap.intern(pattern);
     }
@@ -175,7 +175,7 @@ fn rp_test(st: &mut State) -> R<()> {
 }
 
 fn jsb_new_regexp(st: &mut State) -> R<()> {
-    let pattern: Rc<str>;
+    let pattern: CompactString;
     let mut flags = 0u32;
     let mut is_clone = false;
 

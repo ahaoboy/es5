@@ -4,6 +4,8 @@
 //! instruction enum instead, which is simpler and faster to execute while
 //! preserving the exact semantics (including jump layout and line info).
 
+use compact_str::CompactString;
+use thin_vec::ThinVec;
 use crate::lex::findword;
 use crate::number;
 use crate::object::FunRef;
@@ -30,7 +32,7 @@ pub enum Op {
 
     NewArray,
     NewObject,
-    NewRegexp(Rc<str>, u32),
+    NewRegexp(CompactString, u32),
 
     Undef,
     Null,
@@ -44,10 +46,10 @@ pub enum Op {
     SetLocal(u32),
     DelLocal(u32),
 
-    HasVar(Rc<str>),
-    GetVar(Rc<str>),
-    SetVar(Rc<str>),
-    DelVar(Rc<str>),
+    HasVar(CompactString),
+    GetVar(CompactString),
+    SetVar(CompactString),
+    DelVar(CompactString),
 
     In,
 
@@ -58,11 +60,11 @@ pub enum Op {
     InitSetter,
 
     GetProp,
-    GetPropS(Rc<str>),
+    GetPropS(CompactString),
     SetProp,
-    SetPropS(Rc<str>),
+    SetPropS(CompactString),
     DelProp,
-    DelPropS(Rc<str>),
+    DelPropS(CompactString),
 
     Iterator,
     NextIter,
@@ -108,7 +110,7 @@ pub enum Op {
 
     Try(usize),
     EndTry,
-    Catch(Rc<str>),
+    Catch(CompactString),
     EndCatch,
 
     With,
@@ -132,34 +134,34 @@ pub struct Inst {
 
 /// A compiled function (js_Function).
 pub struct Function {
-    pub name: Rc<str>,
+    pub name: CompactString,
     pub script: bool,
     pub lightweight: bool,
     pub strict: bool,
     pub arguments: bool,
     pub numparams: usize,
 
-    pub code: Rc<Vec<Inst>>,
-    pub funtab: Rc<Vec<FunRef>>,
-    pub vartab: Rc<Vec<Rc<str>>>,
+    pub code: Rc<ThinVec<Inst>>,
+    pub funtab: Rc<ThinVec<FunRef>>,
+    pub vartab: Rc<ThinVec<CompactString>>,
 
-    pub filename: Rc<str>,
+    pub filename: CompactString,
     pub line: u32,
     pub col: u32,
 }
 
 /// Function under construction.
 struct FunBuild {
-    name: Rc<str>,
+    name: CompactString,
     script: bool,
     lightweight: bool,
     strict: bool,
     arguments: bool,
     numparams: usize,
-    code: Vec<Inst>,
-    funtab: Vec<FunRef>,
-    vartab: Vec<Rc<str>>,
-    filename: Rc<str>,
+    code: ThinVec<Inst>,
+    funtab: ThinVec<FunRef>,
+    vartab: ThinVec<CompactString>,
+    filename: CompactString,
     line: u32,
     col: u32,
     lastline: u32,
@@ -250,13 +252,13 @@ impl<'a> Compiler<'a> {
     fn addlocal(&mut self, ident: AstRef, reuse: bool) -> R<usize> {
         let name = self.node(ident).string.clone().unwrap_or_default();
         if self.fun.strict {
-            if name.as_ref() == "arguments" {
+            if name.as_ref() as &str == "arguments" {
                 return self.cerror(
                     ident,
                     "redefining 'arguments' is not allowed in strict mode",
                 );
             }
-            if name.as_ref() == "eval" {
+            if name.as_ref() as &str == "eval" {
                 return self.cerror(ident, "redefining 'eval' is not allowed in strict mode");
             }
         }
@@ -281,7 +283,7 @@ impl<'a> Compiler<'a> {
 
     fn findlocal(&self, name: &str) -> i32 {
         for i in (0..self.fun.vartab.len()).rev() {
-            if self.fun.vartab[i].as_ref() == name {
+            if self.fun.vartab[i].as_ref() as &str == name {
                 return (i + 1) as i32;
             }
         }
@@ -309,8 +311,8 @@ impl<'a> Compiler<'a> {
 
     fn emitlocal(&mut self, kind: LocalOp, ident: AstRef) -> R<()> {
         let name = self.node(ident).string.clone().unwrap_or_default();
-        let is_arguments = name.as_ref() == "arguments";
-        let is_eval = name.as_ref() == "eval";
+        let is_arguments = name.as_ref() as &str == "arguments";
+        let is_eval = name.as_ref() as &str == "eval";
 
         if is_arguments {
             self.fun.lightweight = false;
@@ -397,7 +399,7 @@ impl<'a> Compiler<'a> {
             return self.emitlocal(kind, ident);
         }
         let name = self.node(ident).string.clone().unwrap_or_default();
-        let is_arguments = name.as_ref() == "arguments";
+        let is_arguments = name.as_ref() as &str == "arguments";
         if is_arguments {
             self.fun.lightweight = false;
             self.fun.arguments = true;
@@ -740,7 +742,7 @@ impl<'a> Compiler<'a> {
                 let name = self.node(fun).string.clone().unwrap_or_default();
                 // a direct call on the global eval() compiles to OP_EVAL;
                 // a locally shadowed eval is an ordinary function call
-                if name.as_ref() == "eval" && self.findlocal("eval") < 0 {
+                if name.as_ref() as &str == "eval" && self.findlocal("eval") < 0 {
                     return self.ceval(args);
                 }
                 self.cexp(fun)?;
@@ -1432,7 +1434,7 @@ impl<'a> Compiler<'a> {
     fn matchlabel(&self, mut node: AstRef, label: &str) -> bool {
         while node != AST_NONE && self.node(node).typ == AstType::StmLabel {
             let s = self.node(self.node(node).a).string.clone().unwrap_or_default();
-            if s.as_ref() == label {
+            if s.as_ref() as &str == label {
                 return true;
             }
             node = self.node(node).parent;
@@ -1653,7 +1655,7 @@ impl<'a> Compiler<'a> {
             let first = self.node(body).a;
             if first != AST_NONE && self.node(first).typ == AstType::ExpString
                 && let Some(s) = &self.node(first).string
-                    && s.as_ref() == "use strict" {
+                    && s.as_ref() as &str == "use strict" {
                         self.fun.strict = true;
                     }
         }
@@ -1706,10 +1708,10 @@ impl<'a> Compiler<'a> {
         default_strict: bool,
         is_fun_exp: bool,
     ) -> R<FunRef> {
-        let fname: Rc<str> = if name != AST_NONE {
+        let fname: CompactString = if name != AST_NONE {
             self.node(name).string.clone().unwrap_or_default()
         } else {
-            Rc::from("")
+            CompactString::new("")
         };
         let filename = self.fun.filename.clone();
         let mut sub = Compiler {
@@ -1722,9 +1724,9 @@ impl<'a> Compiler<'a> {
                 strict: default_strict,
                 arguments: false,
                 numparams: 0,
-                code: Vec::new(),
-                funtab: Vec::new(),
-                vartab: Vec::new(),
+                code: ThinVec::new(),
+                funtab: ThinVec::new(),
+                vartab: ThinVec::new(),
                 filename,
                 line,
                 col,
@@ -1796,15 +1798,15 @@ pub fn compile_script(st: &mut State, ast: &Ast, default_strict: bool) -> R<FunR
         st,
         ast,
         fun: FunBuild {
-            name: Rc::from(""),
+            name: CompactString::new(""),
             script: true,
             lightweight: true,
             strict: default_strict,
             arguments: false,
             numparams: 0,
-            code: Vec::new(),
-            funtab: Vec::new(),
-            vartab: Vec::new(),
+            code: ThinVec::new(),
+            funtab: ThinVec::new(),
+            vartab: ThinVec::new(),
             filename,
             line: root_line,
             col: root_col,
@@ -1845,15 +1847,15 @@ pub fn compile_function(st: &mut State, ast: &Ast) -> R<FunRef> {
         st,
         ast,
         fun: FunBuild {
-            name: Rc::from(""),
+            name: CompactString::new(""),
             script: false,
             lightweight: true,
             strict: default_strict,
             arguments: false,
             numparams: 0,
-            code: Vec::new(),
-            funtab: Vec::new(),
-            vartab: Vec::new(),
+            code: ThinVec::new(),
+            funtab: ThinVec::new(),
+            vartab: ThinVec::new(),
             filename,
             line,
             col,

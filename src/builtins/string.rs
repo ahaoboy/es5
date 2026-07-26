@@ -6,10 +6,10 @@ use crate::object::{Class, Payload};
 use crate::state::{JS_STRLIMIT, R, State};
 use crate::utf;
 use crate::value::{JS_DONTENUM, JS_REGEXP_G, Value};
-use std::rc::Rc;
+use compact_str::CompactString;
 
 /// checkstring: ToString, but null/undefined is a TypeError.
-fn checkstring(st: &mut State, idx: i32) -> R<Rc<str>> {
+fn checkstring(st: &mut State, idx: i32) -> R<CompactString> {
     if !st.iscoercible(idx) {
         return st.type_error("string function called on null or undefined");
     }
@@ -34,7 +34,7 @@ fn jsb_string(st: &mut State) -> R<()> {
     }
 }
 
-fn self_string(st: &mut State) -> R<Rc<str>> {
+fn self_string(st: &mut State) -> R<CompactString> {
     let obj = st.toobject(0)?;
     match &st.heap.obj(obj).payload {
         Payload::String(s) if st.heap.obj(obj).class == Class::String => Ok(s.string.clone()),
@@ -50,7 +50,20 @@ fn sp_tostring(st: &mut State) -> R<()> {
 fn sp_charat(st: &mut State) -> R<()> {
     let s = checkstring(st, 0)?;
     let pos = st.tointeger(1)?;
-    match utf::runeat(&s, pos.max(0) as usize) {
+    if pos < 0 {
+        return st.push_literal("");
+    }
+    let pos = pos as usize;
+    if s.is_ascii() {
+        if pos < s.len() {
+            let b = s.as_bytes()[pos];
+            let out = unsafe { std::str::from_utf8_unchecked(std::slice::from_ref(&b)) };
+            return st.push_string(out);
+        } else {
+            return st.push_literal("");
+        }
+    }
+    match utf::runeat(&s, pos) {
         Some(r) => {
             let mut out = String::new();
             utf::push_rune(&mut out, r);
@@ -63,7 +76,18 @@ fn sp_charat(st: &mut State) -> R<()> {
 fn sp_charcodeat(st: &mut State) -> R<()> {
     let s = checkstring(st, 0)?;
     let pos = st.tointeger(1)?;
-    match utf::runeat(&s, pos.max(0) as usize) {
+    if pos < 0 {
+        return st.push_number(f64::NAN);
+    }
+    let pos = pos as usize;
+    if s.is_ascii() {
+        if pos < s.len() {
+            return st.push_number(s.as_bytes()[pos] as f64);
+        } else {
+            return st.push_number(f64::NAN);
+        }
+    }
+    match utf::runeat(&s, pos) {
         Some(r) => st.push_number(r as f64),
         None => st.push_number(f64::NAN),
     }
@@ -111,7 +135,7 @@ fn sp_indexof(st: &mut State) -> R<()> {
         None => return st.push_number(-1.0),
     };
     // O(n+m) search.
-    match haystack[start_byte..].find(needle.as_ref()) {
+    match haystack[start_byte..].find(needle.as_ref() as &str) {
         Some(offset) => {
             let k = utf::byte_to_utf16_idx(&haystack, start_byte + offset);
             st.push_number(k as f64)
@@ -141,7 +165,7 @@ fn sp_lastindexof(st: &mut State) -> R<()> {
         None => return st.push_number(-1.0),
     };
     // O(n+m) reverse search.
-    match haystack[..end_byte].rfind(needle.as_ref()) {
+    match haystack[..end_byte].rfind(needle.as_ref() as &str) {
         Some(offset) => {
             let k = utf::byte_to_utf16_idx(&haystack, offset);
             st.push_number(k as f64)
@@ -612,7 +636,7 @@ fn sp_replace_string(st: &mut State) -> R<()> {
     let source = checkstring(st, 0)?;
     let needle = st.tostring(1)?;
 
-    let s = match source.find(needle.as_ref()) {
+    let s = match source.find(needle.as_ref() as &str) {
         Some(i) => i,
         None => {
             return st.copy(0);
@@ -791,7 +815,7 @@ fn sp_split_string(st: &mut State) -> R<()> {
         if i >= limit {
             break;
         }
-        match rest.find(sep.as_ref()) {
+        match rest.find(sep.as_ref() as &str) {
             Some(s) => {
                 st.push_string(&rest[..s])?;
                 st.setindex(-2, i)?;
@@ -861,7 +885,7 @@ fn sp_startswith(st: &mut State) -> R<()> {
     } else {
         0
     };
-    st.push_boolean(s[pos..].starts_with(search.as_ref()))
+    st.push_boolean(s[pos..].starts_with(search.as_ref() as &str))
 }
 
 /// String.prototype.includes(search[, position]) — ES6.
@@ -874,7 +898,7 @@ fn sp_includes(st: &mut State) -> R<()> {
     } else {
         0
     };
-    st.push_boolean(s[pos..].contains(search.as_ref()))
+    st.push_boolean(s[pos..].contains(search.as_ref() as &str))
 }
 
 /// String.prototype.repeat(count) — ES6.

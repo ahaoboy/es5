@@ -12,7 +12,7 @@ use crate::lex::{TK_RETURN, TK_SHL, TK_SHL_ASS, TK_SHR, TK_SHR_ASS, TK_STRICTEQ,
 use crate::lex::{TK_SUB_ASS, TK_SWITCH, TK_THIS, TK_THROW, TK_TRUE, TK_TRY, TK_TYPEOF};
 use crate::lex::{TK_USHR, TK_USHR_ASS, TK_VOID, TK_WHILE, TK_XOR_ASS};
 use crate::state::{State, R};
-use std::rc::Rc;
+use compact_str::CompactString;
 
 pub type AstRef = u32;
 pub const AST_NONE: AstRef = u32::MAX;
@@ -151,7 +151,7 @@ pub struct AstNode {
     pub c: AstRef,
     pub d: AstRef,
     pub number: f64,
-    pub string: Option<Rc<str>>,
+    pub string: Option<CompactString>,
     pub parent: AstRef,
 }
 
@@ -389,14 +389,14 @@ impl Parser {
 
         if self.lookahead != ':' as i32 && self.node(name).typ == AstType::AstIdentifier {
             let s = self.node(name).string.clone().unwrap();
-            if s.as_ref() == "get" {
+            if s.as_ref() as &str == "get" {
                 name = self.propname(st)?;
                 self.expect(st, '(' as i32)?;
                 self.expect(st, ')' as i32)?;
                 let body = self.funbody(st)?;
                 return Ok(self.newnode(AstType::ExpPropGet, line, name, AST_NONE, body, AST_NONE));
             }
-            if s.as_ref() == "set" {
+            if s.as_ref() as &str == "set" {
                 name = self.propname(st)?;
                 self.expect(st, '(' as i32)?;
                 let arg = self.identifier(st)?;

@@ -10,8 +10,10 @@
 use crate::compile::Function;
 use crate::state::{CFunction, State};
 use crate::value::Value;
-use std::collections::{BTreeMap, HashSet};
-use std::rc::Rc;
+use compact_str::CompactString;
+use indexmap::IndexMap;
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
+use thin_vec::ThinVec;
 
 pub type ObjRef = u32;
 pub type EnvRef = u32;
@@ -76,7 +78,7 @@ impl Default for Property {
 /// Compiled regular expression payload (js_Regexp).
 pub struct RegexpData {
     pub prog: crate::regexp::Regexp,
-    pub source: Rc<str>,
+    pub source: CompactString,
     pub flags: u32,
     /// lastIndex in UTF-16 code units (ES5); converted to byte offsets at
     /// match time.
@@ -87,7 +89,7 @@ pub struct RegexpData {
 pub struct ArrayData {
     pub length: i32,
     pub simple: bool,
-    pub flat: Vec<Value>,
+    pub flat: ThinVec<Value>,
 }
 
 /// Function/Script closure payload.
@@ -100,29 +102,29 @@ pub struct FunctionData {
 /// Built-in (C) function payload.
 #[derive(Clone)]
 pub struct CFunctionData {
-    pub name: Rc<str>,
+    pub name: CompactString,
     pub function: CFunction,
     pub constructor: Option<CFunction>,
     pub length: i32,
 }
 
-/// Map collection payload (ES6): stores key-value pairs as a Vec.
+/// Map collection payload (ES6): stores key-value pairs as a ThinVec.
 #[derive(Clone)]
 pub struct MapData {
-    pub entries: Vec<(crate::value::Value, crate::value::Value)>,
+    pub entries: ThinVec<(crate::value::Value, crate::value::Value)>,
 }
 
-/// Set collection payload (ES6): stores unique values as a Vec.
+/// Set collection payload (ES6): stores unique values as a ThinVec.
 #[derive(Clone)]
 pub struct SetData {
-    pub values: Vec<crate::value::Value>,
+    pub values: ThinVec<crate::value::Value>,
 }
 
 /// Symbol payload: a global symbol's description and unique registration key.
 #[derive(Clone)]
 pub struct SymbolData {
-    pub description: Rc<str>,
-    pub key: Option<Rc<str>>, // Some(key) if created via Symbol.for
+    pub description: CompactString,
+    pub key: Option<CompactString>, // Some(key) if created via Symbol.for
 }
 
 /// Iterator object payload (js_Object.u.iter + js_Iterator).
@@ -130,14 +132,14 @@ pub struct IteratorData {
     pub target: ObjRef,
     pub i: u32,
     pub n: u32,
-    pub keys: Vec<Rc<str>>,
+    pub keys: ThinVec<CompactString>,
     pub pos: usize,
 }
 
 /// ES6 iterator payload: stores a snapshot of values and a cursor position.
 #[derive(Clone)]
 pub struct ES6IteratorData {
-    pub values: Vec<crate::value::Value>,
+    pub values: ThinVec<crate::value::Value>,
     pub pos: usize,
 }
 
@@ -157,7 +159,7 @@ pub struct ArgumentsData {
 /// String payload: value plus its UTF-16 code unit length.
 #[derive(Clone)]
 pub struct StringData {
-    pub string: Rc<str>,
+    pub string: CompactString,
     pub length: i32,
 }
 
@@ -186,22 +188,22 @@ pub enum Payload {
 /// One captured stack frame for error diagnostics (innermost first).
 #[derive(Clone)]
 pub struct TraceFrame {
-    pub name: Rc<str>,
-    pub file: Rc<str>,
+    pub name: CompactString,
+    pub file: CompactString,
     pub line: u32,
     pub col: u32,
 }
 
 /// Error object payload: the stack trace captured at creation time.
 pub struct ErrorData {
-    pub frames: Vec<TraceFrame>,
+    pub frames: ThinVec<TraceFrame>,
 }
 
 /// A JavaScript object (js_Object).
 pub struct Object {
     pub class: Class,
     pub extensible: bool,
-    pub properties: BTreeMap<Rc<str>, Property>,
+    pub properties: IndexMap<CompactString, Property, FxBuildHasher>,
     pub prototype: Option<ObjRef>,
     pub payload: Payload,
     /// next insertion sequence number for new properties
@@ -227,15 +229,15 @@ pub struct Heap {
     pub funs: Vec<Slot<Function>>,
     /// Permanent literal strings (JS_TLITSTR in mujs): string constants
     /// referenced by bytecode. They live forever, so no GC scan needed.
-    pub lits: Vec<Rc<str>>,
+    pub lits: ThinVec<CompactString>,
     free_objects: Vec<ObjRef>,
     free_envs: Vec<EnvRef>,
     free_funs: Vec<FunRef>,
     /// Interned strings (jsintern.c): used for source text, identifiers and
     /// property names to reduce memory churn.
-    intern: HashSet<Rc<str>>,
+    intern: FxHashSet<CompactString>,
     /// Deduplication map for the literal table.
-    litmap: std::collections::HashMap<Rc<str>, u32>,
+    litmap: FxHashMap<CompactString, u32>,
     pub gcmark: u8,
     pub gccounter: u32,
     pub gcthresh: u32,
@@ -247,12 +249,12 @@ impl Heap {
             objects: Vec::with_capacity(256),
             envs: Vec::with_capacity(64),
             funs: Vec::with_capacity(64),
-            lits: Vec::with_capacity(64),
+            lits: ThinVec::with_capacity(64),
             free_objects: Vec::new(),
             free_envs: Vec::new(),
             free_funs: Vec::new(),
-            intern: HashSet::new(),
-            litmap: std::collections::HashMap::new(),
+            intern: FxHashSet::default(),
+            litmap: FxHashMap::default(),
             gcmark: 1,
             gccounter: 0,
             gcthresh: 0,
@@ -260,13 +262,13 @@ impl Heap {
     }
 
     /// Intern a string (js_intern).
-    pub fn intern(&mut self, s: &str) -> Rc<str> {
-        if let Some(rc) = self.intern.get(s) {
-            return rc.clone();
+    pub fn intern(&mut self, s: &str) -> CompactString {
+        if let Some(cs) = self.intern.get(s) {
+            return cs.clone();
         }
-        let rc: Rc<str> = Rc::from(s);
-        self.intern.insert(rc.clone());
-        rc
+        let cs = CompactString::new(s);
+        self.intern.insert(cs.clone());
+        cs
     }
 
     /// Register a literal string, returning its (deduplicated) index.
@@ -274,10 +276,10 @@ impl Heap {
         if let Some(&i) = self.litmap.get(s) {
             return i;
         }
-        let rc: Rc<str> = Rc::from(s);
+        let cs = CompactString::new(s);
         let i = self.lits.len() as u32;
-        self.lits.push(rc.clone());
-        self.litmap.insert(rc, i);
+        self.lits.push(cs.clone());
+        self.litmap.insert(cs, i);
         i
     }
 
@@ -285,19 +287,19 @@ impl Heap {
     #[inline]
     pub fn js_str<'a>(&'a self, v: &'a Value) -> &'a str {
         match v {
-            Value::String(r) => r,
-            Value::LitStr(i) => &self.lits[*i as usize],
+            Value::String(r) => r.as_str(),
+            Value::LitStr(i) => self.lits[*i as usize].as_str(),
             _ => "",
         }
     }
 
-    /// Owned Rc copy of a string value (for values that must survive calls).
+    /// Owned CompactString copy of a string value (for values that must survive calls).
     #[inline]
-    pub fn js_rcstr(&self, v: &Value) -> Rc<str> {
+    pub fn js_rcstr(&self, v: &Value) -> CompactString {
         match v {
             Value::String(r) => r.clone(),
             Value::LitStr(i) => self.lits[*i as usize].clone(),
-            _ => Rc::from(""),
+            _ => CompactString::new(""),
         }
     }
 
@@ -307,7 +309,7 @@ impl Heap {
         let obj = Object {
             class,
             extensible: true,
-            properties: BTreeMap::new(),
+            properties: IndexMap::default(),
             prototype,
             payload: Payload::None,
             next_order: 0,
@@ -459,7 +461,7 @@ impl Heap {
 
     /// jsV_delproperty
     pub fn del_property(&mut self, obj: ObjRef, name: &str) {
-        self.obj_mut(obj).properties.remove(name);
+        self.obj_mut(obj).properties.shift_remove(name);
     }
 
     /// jsV_resizearray: delete array elements >= newlen for sparse arrays.
@@ -475,12 +477,12 @@ impl Heap {
         if newlen < oldlen {
             if oldlen > (count as i32) * 2 {
                 // sparse: iterate own keys and delete canonical indices >= newlen
-                let keys: Vec<Rc<str>> = self.obj(obj).properties.keys().cloned().collect();
+                let keys: Vec<CompactString> = self.obj(obj).properties.keys().cloned().collect();
                 for name in keys {
                     let k = crate::number::string_to_number(&name);
                     let k = crate::number::number_to_integer(k);
                     if k >= newlen
-                        && name.as_ref() == crate::number::number_to_string(k as f64)
+                        && name.as_ref() as &str == crate::number::number_to_string(k as f64)
                     {
                         self.del_property(obj, &name);
                     }
@@ -500,13 +502,15 @@ impl Heap {
 
     /// Sort own property names into ES5 enumeration order: integer indices
     /// in ascending numeric order first, then all other keys in insertion
+    /// Sort own property names into ES5 enumeration order: integer indices
+    /// in ascending numeric order first, then all other keys in insertion
     /// order. Returns (integer_index_keys, insertion_ordered_keys).
-    fn ordered_keys<I>(names: I) -> (Vec<Rc<str>>, Vec<Rc<str>>)
+    fn ordered_keys<I>(names: I) -> (ThinVec<CompactString>, ThinVec<CompactString>)
     where
-        I: IntoIterator<Item = (Rc<str>, u32)>,
+        I: IntoIterator<Item = (CompactString, u32)>,
     {
-        let mut ints: Vec<(u32, Rc<str>)> = Vec::new();
-        let mut rest: Vec<(u32, Rc<str>)> = Vec::new();
+        let mut ints: Vec<(u32, CompactString)> = Vec::new();
+        let mut rest: Vec<(u32, CompactString)> = Vec::new();
         for (name, order) in names {
             if let Some(i) = crate::state::is_array_index(&name) {
                 ints.push((i as u32, name));
@@ -524,7 +528,7 @@ impl Heap {
 
     /// The own property names of `obj` in ES5 enumeration order.
     /// `enumerable_only` selects Object.keys vs Object.getOwnPropertyNames.
-    pub fn ordered_own_keys(&self, obj: ObjRef, enumerable_only: bool) -> Vec<Rc<str>> {
+    pub fn ordered_own_keys(&self, obj: ObjRef, enumerable_only: bool) -> ThinVec<CompactString> {
         let object = self.obj(obj);
         let (ints, rest) = Self::ordered_keys(object.properties.iter().filter_map(|(n, p)| {
             if !enumerable_only || p.atts & crate::value::JS_DONTENUM == 0 {
@@ -542,7 +546,7 @@ impl Heap {
         &self,
         obj: ObjRef,
         seen: Option<ObjRef>,
-        out: &mut Vec<Rc<str>>,
+        out: &mut ThinVec<CompactString>,
     ) {
         let names = self.ordered_own_keys(obj, true);
         for name in names {
@@ -560,9 +564,9 @@ impl Heap {
     /// (itflatten in jsproperty.c): own keys first (in ES5 order), then
     /// the prototype's, then the prototype's prototype, etc. Names
     /// shadowed by an enumerable property higher in the chain are skipped.
-    fn flatten_keys(&self, obj: ObjRef) -> Vec<Rc<str>> {
+    fn flatten_keys(&self, obj: ObjRef) -> ThinVec<CompactString> {
         let object = self.obj(obj);
-        let mut out = Vec::new();
+        let mut out = ThinVec::new();
         self.walk_keys(obj, object.prototype, &mut out);
         if let Some(p) = object.prototype {
             out.extend(self.flatten_keys(p));
@@ -573,7 +577,7 @@ impl Heap {
     /// jsV_newiterator
     pub fn new_iterator(&mut self, obj: ObjRef, own: bool) -> ObjRef {
         let mut keys = if own {
-            let mut out = Vec::new();
+            let mut out = ThinVec::new();
             self.walk_keys(obj, None, &mut out);
             out
         } else {
@@ -595,7 +599,7 @@ impl Heap {
                 _ => None,
             };
             if let Some((mapped, deleted)) = mapped_info {
-                let mut mapped_keys: Vec<Rc<str>> = Vec::new();
+                let mut mapped_keys: ThinVec<CompactString> = ThinVec::new();
                 for k in 0..mapped {
                     if !deleted.contains(&k) {
                         let name = self.intern(&k.to_string());
@@ -622,7 +626,7 @@ impl Heap {
     }
 
     /// jsV_nextiterator
-    pub fn next_iterator(&mut self, io: ObjRef, scratch: &mut String) -> Option<Rc<str>> {
+    pub fn next_iterator(&mut self, io: ObjRef, scratch: &mut String) -> Option<CompactString> {
         let it = match &self.obj(io).payload {
             Payload::Iterator(it) => it,
             _ => return None,
@@ -736,8 +740,8 @@ impl State {
                 scratch.push(p);
             }
             for prop in obj.properties.values() {
-                if let Value::Object(v) = &prop.value {
-                    scratch.push(*v);
+                if let Value::Object(v) = prop.value {
+                    scratch.push(v);
                 }
                 if let Some(g) = prop.getter {
                     scratch.push(g);

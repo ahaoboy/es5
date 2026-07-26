@@ -15,7 +15,10 @@ use crate::object::{
 use crate::parse;
 use crate::utf;
 use crate::value::{Hint, JS_DONTCONF, JS_DONTENUM, JS_READONLY, Value};
+use compact_str::CompactString;
+use rustc_hash::FxHashMap;
 use std::rc::Rc;
+use thin_vec::ThinVec;
 
 /// Result type used throughout the engine; `Err` is a thrown JS exception.
 pub type R<T> = Result<T, Value>;
@@ -113,7 +116,7 @@ impl Prototypes {
 #[derive(Clone)]
 pub struct StackTrace {
     pub fun: FunRef,
-    pub name: Option<Rc<str>>,
+    pub name: Option<CompactString>,
     pub line: u32,
     pub col: u32,
     pub stack: usize,
@@ -202,10 +205,10 @@ pub struct State {
     pub scratch: String,
 
     /// source text of every loaded script, for error diagnostics
-    pub sources: std::collections::HashMap<Rc<str>, Rc<str>>,
+    pub sources: FxHashMap<CompactString, CompactString>,
 
     /// global symbol registry: Symbol.for(key) -> symbol object
-    pub symbol_registry: std::collections::HashMap<Rc<str>, ObjRef>,
+    pub symbol_registry: FxHashMap<CompactString, ObjRef>,
 
     /// scheduled timers (setTimeout/setInterval), pumped when idle
     #[cfg(any(feature = "modules", feature = "timers"))]
@@ -250,8 +253,8 @@ impl State {
             runlimit: 0,
             memlimit: 0,
             scratch: String::new(),
-            sources: std::collections::HashMap::new(),
-            symbol_registry: std::collections::HashMap::new(),
+            sources: rustc_hash::FxHashMap::default(),
+            symbol_registry: rustc_hash::FxHashMap::default(),
             #[cfg(any(feature = "modules", feature = "timers"))]
             timers: Vec::new(),
             #[cfg(any(feature = "modules", feature = "timers"))]
@@ -259,7 +262,7 @@ impl State {
         };
         st.trace[0] = StackTrace {
             fun: NONE,
-            name: Some(Rc::from("-top-")),
+            name: Some(CompactString::from("-top-")),
             line: 0,
             col: 0,
             stack: 0,
@@ -377,7 +380,7 @@ impl State {
         if v.len() > JS_STRLIMIT {
             return self.range_error("invalid string length");
         }
-        self.push_value(Value::String(Rc::from(v)))
+        self.push_value(Value::String(CompactString::new(v)))
     }
 
     pub fn push_lstring(&mut self, v: &str) -> R<()> {
@@ -389,7 +392,7 @@ impl State {
         self.push_value(Value::LitStr(i))
     }
 
-    pub fn push_string_rc(&mut self, v: Rc<str>) -> R<()> {
+    pub fn push_string_rc(&mut self, v: CompactString) -> R<()> {
         if v.len() > JS_STRLIMIT {
             return self.range_error("invalid string length");
         }
@@ -637,9 +640,8 @@ impl State {
         Ok(number::number_to_uint16(self.tonumber(idx)?))
     }
 
-    /// ToString() on a stack slot (jsV_tostring); returns an owned Rc
-    /// string (cloned from the arena/literal table, so it survives calls).
-    pub fn tostring(&mut self, idx: i32) -> R<Rc<str>> {
+    /// ToString() on a stack slot (jsV_tostring); returns an owned CompactStr.
+    pub fn tostring(&mut self, idx: i32) -> R<CompactString> {
         let v = self.stackidx(idx).clone();
         match v {
             Value::Undefined => Ok(self.heap.intern("undefined")),
@@ -795,7 +797,7 @@ impl State {
         self.heap.obj_mut(o).payload = Payload::Array(ArrayData {
             length: 0,
             simple: true,
-            flat: Vec::new(),
+            flat: thin_vec::ThinVec::new(),
         });
         self.push_object(o)
     }
@@ -956,11 +958,11 @@ impl State {
         let has_frames = !frames.is_empty();
         let trace = Self::frames_to_string(&frames);
         if has_frames {
-            self.heap.obj_mut(o).payload = Payload::Error(ErrorData { frames });
+            self.heap.obj_mut(o).payload = Payload::Error(ErrorData { frames: frames.into() });
         }
         // Derive the error name from the prototype's "name" property
         // (e.g. SyntaxError.prototype.name == "SyntaxError").
-        let name: Rc<str> = self
+        let name: CompactString = self
             .heap
             .get_own_property(proto, "name")
             .and_then(|p| {
@@ -988,7 +990,7 @@ impl State {
     pub fn syntax_error_loc<T>(&mut self, msg: &str, file: &str, line: u32, col: u32) -> R<T> {
         let full = format!("{}:{}:{}: {}", file, line, col, msg);
         let frames = vec![TraceFrame {
-            name: Rc::from(""),
+            name: CompactString::new(""),
             file: self.heap.intern(file),
             line,
             col,
@@ -1220,7 +1222,7 @@ impl State {
             Class::String => {
                 let (s, slen) = match &self.heap.obj(obj).payload {
                     Payload::String(sd) => (sd.string.clone(), sd.length),
-                    _ => (Rc::from(""), 0),
+                    _ => (CompactString::new(""), 0),
                 };
                 if name == "length" {
                     self.push_number(slen as f64)?;
@@ -1262,7 +1264,7 @@ impl State {
                     let target = match &self.heap.obj(obj).payload {
                         Payload::Arguments(a) => {
                             if k >= 0 && (k as u32) < a.mapped && !a.deleted.contains(&(k as u32)) {
-                                let varname = self.heap.fun(a.fun).vartab[k as usize].clone();
+                                let varname: CompactString = self.heap.fun(a.fun).vartab[k as usize].clone();
                                 Some((a.env, varname))
                             } else {
                                 None
@@ -1442,7 +1444,7 @@ impl State {
                     let target = match &self.heap.obj(obj).payload {
                         Payload::Arguments(a) => {
                             if k >= 0 && (k as u32) < a.mapped && !a.deleted.contains(&(k as u32)) {
-                                let varname = self.heap.fun(a.fun).vartab[k as usize].clone();
+                                let varname: CompactString = self.heap.fun(a.fun).vartab[k as usize].clone();
                                 Some((a.env, varname))
                             } else {
                                 None
@@ -1843,7 +1845,7 @@ impl State {
             }
         };
         self.setregistry(&s)?;
-        Ok(s)
+        Ok(s.into())
     }
 
     pub fn js_unref(&mut self, r: &str) -> R<()> {
@@ -1895,7 +1897,7 @@ impl State {
     }
 
     // ------------------------------------------------------------------
-    // iterators
+    // iterators (jsproperty.c)
     // ------------------------------------------------------------------
 
     pub fn pushiterator(&mut self, idx: i32, own: bool) -> R<()> {
@@ -1904,7 +1906,7 @@ impl State {
         self.push_object(io)
     }
 
-    pub fn nextiterator(&mut self, idx: i32) -> R<Option<Rc<str>>> {
+    pub fn nextiterator(&mut self, idx: i32) -> R<Option<CompactString>> {
         let o = self.toobject(idx)?;
         let mut scratch = std::mem::take(&mut self.scratch);
         let r = self.heap.next_iterator(o, &mut scratch);
@@ -2126,14 +2128,14 @@ impl State {
     }
 
     /// Resolve a trace entry's display name and file.
-    pub fn trace_name_file(&self, t: &StackTrace) -> (Rc<str>, Rc<str>) {
+    pub fn trace_name_file(&self, t: &StackTrace) -> (CompactString, CompactString) {
         if t.fun != NONE {
             let f = self.heap.fun(t.fun);
             (f.name.clone(), f.filename.clone())
         } else {
             (
-                t.name.clone().unwrap_or_else(|| Rc::from("")),
-                Rc::from("native"),
+                t.name.clone().unwrap_or_else(|| CompactString::new("")),
+                CompactString::new("native"),
             )
         }
     }
@@ -2389,7 +2391,8 @@ impl State {
             s.push_str(&sa);
             s.push_str(&sb);
             // move the buffer into the arena (no second copy)
-            self.push_value(Value::String(Rc::from(s)))
+            let interned = self.heap.intern(&s);
+            self.push_value(Value::String(interned))
         } else {
             let x = self.tonumber(-2)?;
             let y = self.tonumber(-1)?;
@@ -2611,11 +2614,11 @@ impl State {
 
         // find the primary (innermost) frame and its source
         let primary = frames.first();
-        let src = primary.and_then(|f| self.sources.get(&f.file).cloned());
+        let src: Option<CompactString> = primary.and_then(|f| self.sources.get(&f.file).cloned());
 
         match (primary, src) {
             (Some(f), Some(source)) => {
-                let (offset, len) = crate::diag::line_col_to_span(&source, f.line, f.col);
+                let (offset, len) = crate::diag::line_col_to_span(source.as_str(), f.line, f.col);
                 let label = if message.is_empty() {
                     "error originated here".to_string()
                 } else {
@@ -2628,7 +2631,7 @@ impl State {
                     label,
                     Vec::new(),
                 );
-                let named = miette::NamedSource::new(&f.file, source.to_string());
+                let named = miette::NamedSource::new(f.file.as_str(), source.to_string());
                 eprintln!("{:?}", miette::Report::new(diag).with_source_code(named));
             }
             _ => {
@@ -2653,11 +2656,11 @@ impl State {
 
     /// Extract (kind, message, frames) from a thrown value.
     #[cfg(feature = "cli")]
-    fn describe_error(&mut self, v: &Value) -> (String, String, Vec<TraceFrame>) {
+    fn describe_error(&mut self, v: &Value) -> (String, String, ThinVec<TraceFrame>) {
         if let Value::Object(o) = v {
             let frames = match &self.heap.obj(*o).payload {
                 Payload::Error(e) => e.frames.clone(),
-                _ => Vec::new(),
+                _ => ThinVec::new(),
             };
             let get_str = |name: &str| -> Option<String> {
                 self.heap.get_property(*o, name).and_then(|p| {
@@ -2679,14 +2682,14 @@ impl State {
             .map(|s| s.to_string())
             .unwrap_or_else(|_| "uncaught exception".to_string());
         self.pop(1);
-        ("Uncaught exception".to_string(), s, Vec::new())
+        ("Uncaught exception".to_string(), s, Vec::new().into())
     }
 
     // ------------------------------------------------------------------
     // protected conversions (jsstate.c)
     // ------------------------------------------------------------------
 
-    pub fn trystring(&mut self, idx: i32, error: &str) -> Rc<str> {
+    pub fn trystring(&mut self, idx: i32, error: &str) -> CompactString {
         match self.protect_result(|j| j.tostring(idx)) {
             Ok(s) => s,
             Err(_) => {

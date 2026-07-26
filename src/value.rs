@@ -1,10 +1,11 @@
 //! JavaScript values (js_Value in jsvalue.c).
 
+use compact_str::CompactString;
 use crate::object::ObjRef;
 
-/// A JavaScript value. Runtime strings are `Rc<str>` (freed promptly by
-/// reference counting — much faster for string-building workloads than a
-/// GC'd string arena); literals live in a permanent table by index.
+/// A JavaScript value. Runtime strings are `CompactStr` (inline small string
+/// optimization for <= 24 bytes, freed promptly — much faster for string-building
+/// workloads than a GC'd string arena); literals live in a permanent table by index.
 /// Numbers, objects and literals remain `Copy`.
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -13,13 +14,13 @@ pub enum Value {
     Boolean(bool),
     Number(f64),
     /// runtime string (js_TMEMSTR)
-    String(std::rc::Rc<str>),
+    String(CompactString),
     /// literal string (js_TLITSTR)
     LitStr(u32),
     Object(ObjRef),
 }
 
-/// Identity/reference equality (pointer identity for strings and objects).
+/// Identity/reference equality (pointer identity for objects, content identity for strings).
 /// Does **not** perform JS abstract equality — use `state.rs::equal()` for that.
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
@@ -28,8 +29,7 @@ impl PartialEq for Value {
             | (Value::Null, Value::Null) => true,
             (Value::Boolean(a), Value::Boolean(b)) => a == b,
             (Value::Number(a), Value::Number(b)) => a == b,
-            // Rc identity — same allocation, not same content.
-            (Value::String(a), Value::String(b)) => std::rc::Rc::ptr_eq(a, b),
+            (Value::String(a), Value::String(b)) => a == b,
             (Value::LitStr(a), Value::LitStr(b)) => a == b,
             (Value::Object(a), Value::Object(b)) => a == b,
             _ => false,

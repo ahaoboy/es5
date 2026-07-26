@@ -237,7 +237,7 @@ fn filterprop(st: &mut State, key: &str) -> R<bool> {
         for i in 0..n {
             st.getindex(2, i)?;
             let found = if st.isstring(-1) || st.isnumber(-1) || isstringobject(st, -1) || isnumberobject(st, -1) {
-                key == st.tostring(-1)?.as_ref()
+                key == st.tostring(-1)?.as_ref() as &str
             } else {
                 false
             };

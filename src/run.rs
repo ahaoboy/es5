@@ -76,38 +76,24 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
             }
         }
 
-        if st.heap.gccounter > st.heap.gcthresh {
-            if std::env::var("ES5_NOGC").is_err() {
-                st.gc(false);
-            } else {
-                st.heap.gccounter = 0;
-            }
-        }
-
         let r: R<()>;
         if let Some(v) = limit_err {
             r = Err(v);
         } else {
-        let inst: &Inst = &code[pc];
-        st.trace[st.tracetop].line = inst.line;
-        st.trace[st.tracetop].col = inst.col;
-        pc += 1;
+            let inst: &Inst = &code[pc];
+            pc += 1;
 
-        if matches!(inst.op, Op::Return) {
-            st.strict = savestrict;
-            return Ok(());
-        }
-
-        // Execute one instruction inside a closure so that `?` in the
-        // dispatch arms propagates to the step result (and thus to the
-        // OP_TRY handling below) instead of unwinding run() directly.
-        r = (|st: &mut State| -> R<()> {
-        match &inst.op {
-            Op::Pop => {
-                st.pop(1);
-                Ok(())
+            if matches!(inst.op, Op::Return) {
+                st.strict = savestrict;
+                return Ok(());
             }
-            Op::Dup => st.dup(),
+
+            r = match &inst.op {
+                Op::Pop => {
+                    st.pop(1);
+                    Ok(())
+                }
+                Op::Dup => st.dup(),
             Op::Dup2 => st.dup2(),
             Op::Rot2 => {
                 st.rot2();
@@ -484,11 +470,10 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
             }
 
             Op::JCase(offset) => {
-                let offset = *offset;
                 let b = st.strictequal()?;
                 if b {
                     st.pop(2);
-                    pc = offset;
+                    pc = *offset;
                 } else {
                     st.pop(1);
                 }
@@ -517,7 +502,6 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
             Op::Throw => Err(st.top_value()),
 
             Op::Try(offset) => {
-                let offset = *offset;
                 if st.trystk.len() >= JS_TRYLIMIT {
                     let v = Value::LitStr(st.heap.lit("exception stack overflow"));
                     st.push_value(v.clone())?;
@@ -532,7 +516,7 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
                         strict: st.strict,
                         catch_pc: Some(pc),
                     });
-                    pc = offset;
+                    pc = *offset;
                     Ok(())
                 }
             }
@@ -584,35 +568,36 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
                 Ok(())
             }
             Op::JTrue(offset) => {
-                let offset = *offset;
                 let b = st.toboolean(-1);
                 st.pop(1);
                 if b {
-                    pc = offset;
+                    pc = *offset;
                 }
                 Ok(())
             }
             Op::JFalse(offset) => {
-                let offset = *offset;
                 let b = st.toboolean(-1);
                 st.pop(1);
                 if !b {
-                    pc = offset;
+                    pc = *offset;
                 }
                 Ok(())
             }
 
             Op::Return => {
-                // handled before the closure
                 unreachable!()
             }
-        }
-        })(st);
+        };
         }
 
         match r {
             Ok(()) => {}
             Err(v) => {
+                if pc > 0 && pc - 1 < code.len() {
+                    let inst = &code[pc - 1];
+                    st.trace[st.tracetop].line = inst.line;
+                    st.trace[st.tracetop].col = inst.col;
+                }
                 if st.trystk.len() > base_try {
                     let frame = st.trystk.pop().expect("try frame");
                     st.restore_frame(&frame);

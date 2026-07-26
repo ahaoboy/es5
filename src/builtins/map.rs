@@ -29,7 +29,7 @@ fn map_proto(st: &State) -> ObjRef {
 
 fn m_constructor(st: &mut State) -> R<()> {
     let map_obj = st.heap.alloc_object(Class::Map, Some(map_proto(st)));
-    st.heap.obj_mut(map_obj).payload = Payload::Map(MapData { entries: Vec::new() });
+    st.heap.obj_mut(map_obj).payload = Payload::Map(MapData { entries: Vec::new().into() });
 
     let mut entries: Vec<(Value, Value)> = Vec::new();
 
@@ -39,14 +39,14 @@ fn m_constructor(st: &mut State) -> R<()> {
         let simple = matches!(&st.heap.obj(src).payload, Payload::Array(a) if a.simple);
         if simple {
             let flat = match &st.heap.obj(src).payload {
-                Payload::Array(a) => a.flat.clone(),
+                Payload::Array(a) => a.flat.to_vec(),
                 _ => vec![],
             };
             for pair_val in flat {
                 if let Value::Object(pa) = pair_val
                     && st.heap.obj(pa).class == Class::Array {
                         let pair = match &st.heap.obj(pa).payload {
-                            Payload::Array(a) => a.flat.clone(),
+                            Payload::Array(a) => a.flat.to_vec(),
                             _ => vec![],
                         };
                         if pair.len() >= 2 {
@@ -68,7 +68,7 @@ fn m_constructor(st: &mut State) -> R<()> {
                     if let Value::Object(pa) = &pair_val
                         && st.heap.obj(*pa).class == Class::Array {
                             let pair = match &st.heap.obj(*pa).payload {
-                                Payload::Array(a) => a.flat.clone(),
+                                Payload::Array(a) => a.flat.to_vec(),
                                 _ => vec![],
                             };
                             if pair.len() >= 2 {
@@ -87,7 +87,7 @@ fn m_constructor(st: &mut State) -> R<()> {
     }
 
     if let Payload::Map(m) = &mut st.heap.obj_mut(map_obj).payload {
-        m.entries = entries;
+        m.entries = entries.into();
     }
     st.push_object(map_obj)
 }
@@ -178,7 +178,7 @@ fn m_foreach(st: &mut State) -> R<()> {
     }
     let obj = get_map_data(st, 0)?;
     let entries: Vec<_> = match &st.heap.obj(obj).payload {
-        Payload::Map(m) => m.entries.clone(),
+        Payload::Map(m) => m.entries.to_vec(),
         _ => return Ok(()),
     };
     let this_arg = if st.isdefined(2) {
@@ -201,7 +201,7 @@ fn m_foreach(st: &mut State) -> R<()> {
 fn m_keys(st: &mut State) -> R<()> {
     let obj = get_map_data(st, 0)?;
     let entries = match &st.heap.obj(obj).payload {
-        Payload::Map(m) => m.entries.clone(),
+        Payload::Map(m) => m.entries.to_vec(),
         _ => vec![],
     };
     let values: Vec<Value> = entries.into_iter().map(|(k, _)| k).collect();
@@ -211,7 +211,7 @@ fn m_keys(st: &mut State) -> R<()> {
 fn m_values(st: &mut State) -> R<()> {
     let obj = get_map_data(st, 0)?;
     let entries = match &st.heap.obj(obj).payload {
-        Payload::Map(m) => m.entries.clone(),
+        Payload::Map(m) => m.entries.to_vec(),
         _ => vec![],
     };
     let values: Vec<Value> = entries.into_iter().map(|(_, v)| v).collect();
@@ -221,7 +221,7 @@ fn m_values(st: &mut State) -> R<()> {
 fn m_entries(st: &mut State) -> R<()> {
     let obj = get_map_data(st, 0)?;
     let entries = match &st.heap.obj(obj).payload {
-        Payload::Map(m) => m.entries.clone(),
+        Payload::Map(m) => m.entries.to_vec(),
         _ => vec![],
     };
     let values: Vec<Value> = entries
@@ -231,7 +231,7 @@ fn m_entries(st: &mut State) -> R<()> {
             st.heap.obj_mut(pa).payload = Payload::Array(crate::object::ArrayData {
                 length: 2,
                 simple: true,
-                flat: vec![k, v],
+                flat: vec![k, v].into(),
             });
             Value::Object(pa)
         })
@@ -250,13 +250,11 @@ fn values_same_identity(a: &Value, b: &Value) -> bool {
             }
             x == y
         }
-        (Value::String(x), Value::String(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Value::String(x), Value::String(y)) => x == y,
         (Value::LitStr(x), Value::LitStr(y)) => x == y,
         // cross string variants: compare by content
         (Value::String(_), Value::LitStr(_)) | (Value::LitStr(_), Value::String(_)) => {
-            // defer to Rc identity — lit strs and rc strs can't be equal this way.
-            // For a proper SameValue, we'd need heap access. Accept that identity is
-            // the practical semantics (Map keys are almost always same reference).
+            // For proper SameValueZero, different representations can't be equal by identity
             false
         }
         (Value::Object(x), Value::Object(y)) => x == y,
@@ -311,7 +309,7 @@ fn wm_constructor(st: &mut State) -> R<()> {
         })
         .unwrap_or(st.protos.object);
     let wm = st.heap.alloc_object(Class::WeakMap, Some(proto));
-    st.heap.obj_mut(wm).payload = Payload::Map(MapData { entries: Vec::new() });
+    st.heap.obj_mut(wm).payload = Payload::Map(MapData { entries: Vec::new().into() });
     st.push_object(wm)
 }
 

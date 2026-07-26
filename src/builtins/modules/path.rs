@@ -100,7 +100,7 @@ fn path_basename(st: &mut State) -> R<()> {
     let trimmed = p.trim_end_matches(is_sep);
     let base = trimmed.rsplit(is_sep).next().unwrap_or(trimmed);
     if let Some(ext) = ext
-        && let Some(stripped) = base.strip_suffix(ext.as_ref()) {
+        && let Some(stripped) = base.strip_suffix(ext.as_ref() as &str) {
             return st.push_string(stripped);
         }
     st.push_string(base)

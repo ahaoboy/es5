@@ -117,7 +117,7 @@ fn fire_end_listeners(st: &mut State) -> R<()> {
         .and_then(|p| p.value.as_object());
     if let Some(arr) = end_arr {
         let listeners: Vec<Value> = match &st.heap.obj(arr).payload {
-            crate::object::Payload::Array(a) => a.flat.clone(),
+            crate::object::Payload::Array(a) => a.flat.to_vec(),
             _ => vec![],
         };
         for listener in &listeners {
@@ -183,7 +183,7 @@ pub fn poll_stdin(st: &mut State) -> R<()> {
     // Fire readable (no args)
     if let Some(arr) = readable_arr {
         let listeners: Vec<Value> = match &st.heap.obj(arr).payload {
-            crate::object::Payload::Array(a) => a.flat.clone(),
+            crate::object::Payload::Array(a) => a.flat.to_vec(),
             _ => vec![],
         };
         for listener in &listeners {
@@ -213,7 +213,7 @@ pub fn poll_stdin(st: &mut State) -> R<()> {
         }
         if let Some(line) = fire_line {
             let listeners: Vec<Value> = match &st.heap.obj(arr).payload {
-                crate::object::Payload::Array(a) => a.flat.clone(),
+                crate::object::Payload::Array(a) => a.flat.to_vec(),
                 _ => vec![],
             };
             for listener in &listeners {

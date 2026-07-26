@@ -4,7 +4,6 @@ use super::{propf, R};
 use crate::object::{Class, ObjRef, Payload};
 use crate::state::{is_array_index, State};
 use crate::value::{Value, JS_DONTCONF, JS_DONTENUM, JS_READONLY};
-use std::rc::Rc;
 
 fn jsb_new_object(st: &mut State) -> R<()> {
     if st.isundefined(1) || st.isnull(1) {
@@ -201,7 +200,7 @@ fn o_getownpropertydescriptor(st: &mut State) -> R<()> {
     // virtual properties first (array/string indices and lengths, regexp)
     match class {
         Class::Array => {
-            if name.as_ref() == "length" {
+            if name.as_ref() as &str == "length" {
                 let len = match &st.heap.obj(obj).payload {
                     Payload::Array(a) => a.length,
                     _ => 0,
@@ -220,7 +219,7 @@ fn o_getownpropertydescriptor(st: &mut State) -> R<()> {
                 Payload::String(sd) => (sd.string.clone(), sd.length),
                 _ => (st.heap.intern(""), 0),
             };
-            if name.as_ref() == "length" {
+            if name.as_ref() as &str == "length" {
                 return data_descriptor(st, Value::Number(slen as f64), false, false, false);
             }
             if let Some(k) = is_array_index(&name)
@@ -228,7 +227,7 @@ fn o_getownpropertydescriptor(st: &mut State) -> R<()> {
                     let rune = crate::utf::runeat(&s, k as usize).unwrap_or(0xFFFD);
                     let mut ch = String::new();
                     crate::utf::push_rune(&mut ch, rune);
-                    let ch: Rc<str> = Rc::from(ch.as_str());
+                    let ch = compact_str::CompactString::new(&ch);
                     return data_descriptor(st, Value::String(ch), false, true, false);
                 }
         }

@@ -9,7 +9,6 @@
 use crate::object::{Class, Payload, SymbolData};
 use crate::state::{State, R};
 use crate::value::JS_DONTENUM;
-use std::rc::Rc;
 
 /// Helper: return the Symbol constructor's `.prototype` property.
 fn symbol_proto(st: &State) -> u32 {
@@ -50,7 +49,7 @@ fn sym_ctor(st: &mut State) -> R<()> {
     };
     let proto = symbol_proto(st);
     let sym = st.heap.alloc_object(Class::Symbol, Some(proto));
-    let desc_rc: Rc<str> = st.heap.intern(&desc);
+    let desc_rc = st.heap.intern(&desc);
     st.heap.obj_mut(sym).payload = Payload::Symbol(SymbolData {
         description: desc_rc,
         key: None,
@@ -131,10 +130,10 @@ pub fn init(st: &mut State) {
             if !st.symbol_registry.contains_key(key.as_str()) {
                 let proto = symbol_proto(st);
                 let sym = st.heap.alloc_object(Class::Symbol, Some(proto));
-                let key_rc: Rc<str> = st.heap.intern(&key);
+                let key_rc = st.heap.intern(&key);
                 st.heap.obj_mut(sym).payload = Payload::Symbol(SymbolData {
-                    description: Rc::clone(&key_rc),
-                    key: Some(Rc::clone(&key_rc)),
+                    description: key_rc.clone(),
+                    key: Some(key_rc.clone()),
                 });
                 st.symbol_registry.insert(key_rc, sym);
             }

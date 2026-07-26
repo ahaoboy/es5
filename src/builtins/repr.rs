@@ -280,14 +280,14 @@ pub fn js_repr(st: &mut State, idx: i32) -> R<()> {
 }
 
 /// js_torepr: replace the value at idx with its repr string.
-pub fn js_torepr(st: &mut State, idx: i32) -> R<std::rc::Rc<str>> {
+pub fn js_torepr(st: &mut State, idx: i32) -> R<compact_str::CompactString> {
     js_repr(st, idx)?;
     st.replace(if idx < 0 { idx - 1 } else { idx })?;
     st.tostring(idx)
 }
 
 /// js_tryrepr
-pub fn js_tryrepr(st: &mut State, idx: i32, error: &str) -> std::rc::Rc<str> {
+pub fn js_tryrepr(st: &mut State, idx: i32, error: &str) -> compact_str::CompactString {
     match st.protect_result(|j| js_torepr(j, idx)) {
         Ok(s) => s,
         Err(_) => {

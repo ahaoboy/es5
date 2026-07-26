@@ -44,7 +44,7 @@ fn error_x(st: &mut State, prototype: ObjRef) -> R<()> {
     if !frames.is_empty() {
         let trace = State::frames_to_string(&frames);
         st.heap.obj_mut(obj).payload = crate::object::Payload::Error(
-            crate::object::ErrorData { frames },
+            crate::object::ErrorData { frames: frames.into() },
         );
         st.push_object(obj)?;
         st.push_string(&trace)?;
