@@ -1088,6 +1088,201 @@ fn ap_keys(st: &mut State) -> R<()> {
     make_es6_iterator(st, values)
 }
 
+/// Array.prototype.includes(searchElement, fromIndex) — ES2016
+fn ap_includes(st: &mut State) -> R<()> {
+    let len = st.getlength(0)?.max(0);
+    if len == 0 {
+        return st.push_boolean(false);
+    }
+
+    let mut from = if st.isdefined(2) { st.tointeger(2)? } else { 0 };
+    if from < 0 {
+        from = (from as i64 + len as i64).clamp(0, i32::MAX as i64) as i32;
+    }
+
+    let search = st.stackidx(1).clone();
+    for k in from..len {
+        if st.hasindex(0, k)? {
+            let elem = st.stackidx(-1).clone();
+            st.pop(1);
+            // SameValueZero comparison (like ===, but NaN equals NaN)
+            let equal = match (&search, &elem) {
+                (Value::Number(a), Value::Number(b)) if a.is_nan() && b.is_nan() => true,
+                _ => {
+                    st.push_value(search.clone())?;
+                    st.push_value(elem)?;
+                    let eq = st.strictequal()?;
+                    st.pop(2);
+                    eq
+                }
+            };
+            if equal {
+                return st.push_boolean(true);
+            }
+        }
+    }
+    st.push_boolean(false)
+}
+
+/// Helper function to flatten array recursively
+fn flatten_array(st: &mut State, source_obj: u32, depth: i32, result: &mut Vec<Value>) -> R<()> {
+    if depth <= 0 {
+        // Just copy elements without flattening
+        let len = match &st.heap.obj(source_obj).payload {
+            Payload::Array(a) => a.flat.len() as i32,
+            _ => {
+                if let Some(prop) = st.heap.get_property(source_obj, "length") {
+                    if let Value::Number(n) = prop.value {
+                        n as i32
+                    } else { 0 }
+                } else { 0 }
+            }
+        };
+        for k in 0..len {
+            if let Some(prop) = st.heap.get_property(source_obj, &k.to_string()) {
+                result.push(prop.value.clone());
+            }
+        }
+        return Ok(());
+    }
+
+    let len = match &st.heap.obj(source_obj).payload {
+        Payload::Array(a) => a.flat.len() as i32,
+        _ => {
+            if let Some(prop) = st.heap.get_property(source_obj, "length") {
+                if let Value::Number(n) = prop.value {
+                    n as i32
+                } else { 0 }
+            } else { 0 }
+        }
+    };
+
+    for k in 0..len {
+        if let Some(prop) = st.heap.get_property(source_obj, &k.to_string()) {
+            match &prop.value {
+                Value::Object(obj) if st.heap.obj(*obj).class == Class::Array => {
+                    // Recursively flatten arrays
+                    flatten_array(st, *obj, depth - 1, result)?;
+                }
+                other => {
+                    result.push(other.clone());
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Array.prototype.flat(depth) — ES2019
+fn ap_flat(st: &mut State) -> R<()> {
+    let obj = st.toobject(0)?;
+    let depth = if st.isdefined(1) {
+        let d = st.tonumber(1)?;
+        if d.is_nan() || d < 0.0 {
+            0
+        } else if d.is_infinite() {
+            i32::MAX
+        } else {
+            d as i32
+        }
+    } else {
+        1
+    };
+
+    let mut result: Vec<Value> = Vec::new();
+    flatten_array(st, obj, depth, &mut result)?;
+
+    st.newarray()?;
+    let arr_ref = st.stackidx(-1).clone();
+    if let Value::Object(a) = arr_ref {
+        st.heap.obj_mut(a).payload = Payload::Array(crate::object::ArrayData {
+            length: result.len() as i32,
+            simple: true,
+            flat: result.into(),
+        });
+    }
+    Ok(())
+}
+
+/// Array.prototype.flatMap(callback, thisArg) — ES2019
+fn ap_flatmap(st: &mut State) -> R<()> {
+    if !st.iscallable(1) {
+        return st.type_error("callback is not a function");
+    }
+    let hasthis = st.gettop() >= 3;
+    let obj = st.toobject(0)?;
+    let len = match &st.heap.obj(obj).payload {
+        Payload::Array(a) => a.flat.len() as i32,
+        _ => {
+            if let Some(prop) = st.heap.get_property(obj, "length") {
+                if let Value::Number(n) = prop.value {
+                    n as i32
+                } else { 0 }
+            } else { 0 }
+        }
+    };
+
+    let mut result: Vec<Value> = Vec::new();
+
+    for k in 0..len {
+        if let Some(prop) = st.heap.get_property(obj, &k.to_string()) {
+            let elem = prop.value.clone();
+
+            // Call callback
+            st.copy(1)?; // callback
+            if hasthis { st.copy(2)?; } else { st.push_undefined()?; } // thisArg
+            st.push_value(elem)?; // element
+            st.push_number(k as f64)?; // index
+            st.copy(0)?; // array
+            st.call(3)?;
+
+            let mapped = st.stackidx(-1).clone();
+            st.pop(1);
+
+            // Flatten one level
+            match mapped {
+                Value::Object(mo) if st.heap.obj(mo).class == Class::Array => {
+                    let mapped_len = match &st.heap.obj(mo).payload {
+                        Payload::Array(a) => a.flat.len(),
+                        _ => 0,
+                    };
+                    for i in 0..mapped_len {
+                        if let Some(p) = st.heap.get_property(mo, &i.to_string()) {
+                            result.push(p.value.clone());
+                        }
+                    }
+                }
+                other => {
+                    result.push(other);
+                }
+            }
+        }
+    }
+
+    st.newarray()?;
+    let arr_ref = st.stackidx(-1).clone();
+    if let Value::Object(a) = arr_ref {
+        st.heap.obj_mut(a).payload = Payload::Array(crate::object::ArrayData {
+            length: result.len() as i32,
+            simple: true,
+            flat: result.into(),
+        });
+    }
+    Ok(())
+}
+
+/// Array.of(...items) — ES2015
+fn a_of(st: &mut State) -> R<()> {
+    let top = st.gettop();
+    st.newarray()?;
+    for i in 1..top {
+        st.copy(i)?;
+        st.setindex(-2, i - 1)?;
+    }
+    st.setlength(-1, top - 1)?;
+    Ok(())
+}
+
 pub fn init(st: &mut State) {
     let proto = st.protos.array;
     st.push_object(proto).unwrap();
@@ -1119,6 +1314,9 @@ pub fn init(st: &mut State) {
         propf(st, "Array.prototype.fill", ap_fill, 1).unwrap();
         propf(st, "Array.prototype.find", ap_find, 1).unwrap();
         propf(st, "Array.prototype.findIndex", ap_findindex, 1).unwrap();
+        propf(st, "Array.prototype.includes", ap_includes, 1).unwrap();
+        propf(st, "Array.prototype.flat", ap_flat, 0).unwrap();
+        propf(st, "Array.prototype.flatMap", ap_flatmap, 1).unwrap();
         // iterators
         propf(st, "Array.prototype.values", ap_values, 0).unwrap();
         propf(st, "Array.prototype.entries", ap_entries, 0).unwrap();
@@ -1130,8 +1328,9 @@ pub fn init(st: &mut State) {
     {
         // ES5
         propf(st, "Array.isArray", a_isarray, 1).unwrap();
-        // ES6
+        // ES6+
         propf(st, "Array.from", a_from, 1).unwrap();
+        propf(st, "Array.of", a_of, 0).unwrap();
     }
     st.defglobal("Array", JS_DONTENUM).unwrap();
 }
