@@ -62,6 +62,8 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
     loop {
         if pc >= code.len() {
             // functions always end with OP_RETURN; unreachable in practice
+            // but if we somehow fall off the end, clean up like a return
+            st.trystk.truncate(base_try);
             st.strict = savestrict;
             return Ok(());
         }
@@ -92,6 +94,11 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
             st.trace[st.tracetop].col = inst.col;
 
             if matches!(inst.op, Op::Return) {
+                // A return inside a try block skips OP_ENDTRY, leaving stale
+                // TRY frames on the shared trystk. Pop any frames pushed by
+                // THIS invocation so a later throw in a nested call cannot
+                // catch against (and jump pc into) a dead function's bytecode.
+                st.trystk.truncate(base_try);
                 st.strict = savestrict;
                 return Ok(());
             }
@@ -251,25 +258,39 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
 
             Op::GetProp => {
                 if let Some(ix) = isindex(st, -1) {
-                    let obj = st.toobject(-2)?;
-                    st.get_index(obj, ix)?;
+                    match st.toobject(-2) {
+                        Ok(obj) => {
+                            st.get_index(obj, ix)?;
+                            st.rot3pop2();
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }
                 } else {
                     let name = st.tostring(-1)?;
-                    let obj = st.toobject(-2)?;
-                    // Map Symbol.toString() key to @@name form
-                    let mapped = crate::state::symbol_prop_key(&name);
-                    let sym_name = mapped.unwrap_or(&name);
-                    st.get_property(obj, sym_name)?;
+                    match st.toobject(-2) {
+                        Ok(obj) => {
+                            // Map Symbol.toString() key to @@name form
+                            let mapped = crate::state::symbol_prop_key(&name);
+                            let sym_name = mapped.unwrap_or(&name);
+                            st.get_property(obj, sym_name)?;
+                            st.rot3pop2();
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }
                 }
-                st.rot3pop2();
-                Ok(())
             }
             Op::GetPropS(si) => {
                 let name = &strtab[*si as usize];
-                let obj = st.toobject(-1)?;
-                st.get_property(obj, name)?;
-                st.rot2pop1();
-                Ok(())
+                match st.toobject(-1) {
+                    Ok(obj) => {
+                        st.get_property(obj, name)?;
+                        st.rot2pop1();
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
             }
 
             Op::SetProp => {
@@ -536,6 +557,7 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
                         top: st.top,
                         bot: st.bot,
                         strict: st.strict,
+                        fun: f,
                         catch_pc: Some(pc),
                     });
                     pc = *offset;
@@ -543,7 +565,12 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
                 }
             }
             Op::EndTry => {
-                st.trystk.pop();
+                // pop only our own TRY frame; the exception path already
+                // popped it, in which case the top belongs to an outer
+                // function and must be left alone
+                if st.trystk.last().map(|t| t.fun) == Some(f) {
+                    st.trystk.pop();
+                }
                 Ok(())
             }
 
@@ -618,12 +645,34 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
             Err(v) => {
                 // the trace was updated before execution, so the error
                 // object already captured the correct line/col
-                if st.trystk.len() > base_try {
+                // Find the topmost TRY frame pushed by THIS run (fun == f,
+                // index >= base_try). Frames pushed by nested calls that
+                // leaked are dropped along the way; frames at/below base_try
+                // belong to the host or outer runs and are left untouched.
+                let mut idx = st.trystk.len().checked_sub(1);
+                let mut caught = false;
+                while let Some(i) = idx {
+                    if i < base_try {
+                        break;
+                    }
+                    if st.trystk[i].fun == f {
+                        caught = true;
+                        break;
+                    }
+                    // stale/leaked frame from a nested call; drop it
+                    st.trystk.pop();
+                    idx = st.trystk.len().checked_sub(1);
+                }
+                if caught {
                     let frame = st.trystk.pop().expect("try frame");
                     st.restore_frame(&frame);
                     st.push_value(v)?;
                     pc = frame.catch_pc.expect("run try frame has pc");
                 } else {
+                    // unwind: this invocation's stale TRY frames (from try
+                    // blocks exited via return) must not remain on the shared
+                    // trystk for an outer function's throw to misuse
+                    st.trystk.truncate(base_try);
                     return Err(v);
                 }
             }

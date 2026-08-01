@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 /// VM instructions (enum js_OpCode). Operands are stored inline.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Op {
     Pop,
     Dup,

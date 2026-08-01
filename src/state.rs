@@ -131,6 +131,10 @@ pub struct TryFrame {
     pub top: usize,
     pub bot: usize,
     pub strict: bool,
+    /// The function that pushed this frame; exceptions are only caught by
+    /// the run() invocation whose `f` matches (each function's TRY frames
+    /// are private to its own bytecode, unlike MuJS's flat longjmp stack).
+    pub fun: FunRef,
     /// Where to resume when this frame catches (None = host frame).
     pub catch_pc: Option<usize>,
 }
@@ -1040,6 +1044,7 @@ impl State {
             top: self.top,
             bot: self.bot,
             strict: self.strict,
+            fun: NONE,
             catch_pc: None,
         };
         self.trystk.push(frame);
@@ -2783,6 +2788,7 @@ impl State {
             top: self.top,
             bot: self.bot,
             strict: self.strict,
+            fun: NONE,
             catch_pc: None,
         };
         self.trystk.push(frame);
