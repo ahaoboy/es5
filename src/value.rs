@@ -1,12 +1,12 @@
 //! JavaScript values (js_Value in jsvalue.c).
 
-use compact_str::CompactString;
+use std::rc::Rc;
 use crate::object::ObjRef;
 
-/// A JavaScript value. Runtime strings are `CompactStr` (inline small string
-/// optimization for <= 24 bytes, freed promptly — much faster for string-building
-/// workloads than a GC'd string arena); literals live in a permanent table by index.
-/// Numbers, objects and literals remain `Copy`.
+/// A JavaScript value. Runtime strings are `Rc<str>` (16 bytes, reference
+/// counted — cloning a string is an atomic refcount bump, no data copy);
+/// literals live in a permanent table by index. Numbers, objects and
+/// literals remain `Copy`. Total size: 24 bytes (16 for the Rc + tag).
 #[derive(Clone, Debug)]
 pub enum Value {
     Undefined,
@@ -14,7 +14,7 @@ pub enum Value {
     Boolean(bool),
     Number(f64),
     /// runtime string (js_TMEMSTR)
-    String(CompactString),
+    String(Rc<str>),
     /// literal string (js_TLITSTR)
     LitStr(u32),
     Object(ObjRef),

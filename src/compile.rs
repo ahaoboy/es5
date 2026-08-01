@@ -32,7 +32,7 @@ pub enum Op {
 
     NewArray,
     NewObject,
-    NewRegexp(CompactString, u32),
+    NewRegexp(u32, u32),
 
     Undef,
     Null,
@@ -46,10 +46,10 @@ pub enum Op {
     SetLocal(u32),
     DelLocal(u32),
 
-    HasVar(CompactString),
-    GetVar(CompactString),
-    SetVar(CompactString),
-    DelVar(CompactString),
+    HasVar(u32),
+    GetVar(u32),
+    SetVar(u32),
+    DelVar(u32),
 
     In,
 
@@ -60,11 +60,11 @@ pub enum Op {
     InitSetter,
 
     GetProp,
-    GetPropS(CompactString),
+    GetPropS(u32),
     SetProp,
-    SetPropS(CompactString),
+    SetPropS(u32),
     DelProp,
-    DelPropS(CompactString),
+    DelPropS(u32),
 
     Iterator,
     NextIter,
@@ -110,7 +110,7 @@ pub enum Op {
 
     Try(usize),
     EndTry,
-    Catch(CompactString),
+    Catch(u32),
     EndCatch,
 
     With,
@@ -123,8 +123,9 @@ pub enum Op {
     Return,
 }
 
-/// One instruction with its source location (the interpreter reads the
-/// location before each op, like MuJS's interleaved line numbers).
+/// One instruction with its source location. Line/col are read only when
+/// reporting an exception; keeping them inline (instead of a sparse line
+/// table) avoids any per-instruction bookkeeping in the dispatch loop.
 #[derive(Clone)]
 pub struct Inst {
     pub line: u32,
@@ -144,6 +145,11 @@ pub struct Function {
     pub code: Rc<ThinVec<Inst>>,
     pub funtab: Rc<ThinVec<FunRef>>,
     pub vartab: Rc<ThinVec<CompactString>>,
+    /// String table for string-indexed operands (GetPropS/GetVar/...).
+    /// Strings are resolved to owned CompactStrings at compile time (typically
+    /// inline, no heap allocation for short names), so the dispatch loop just
+    /// indexes this table without allocating.
+    pub strtab: Rc<ThinVec<CompactString>>,
 
     pub filename: CompactString,
     pub line: u32,
@@ -161,6 +167,7 @@ struct FunBuild {
     code: ThinVec<Inst>,
     funtab: ThinVec<FunRef>,
     vartab: ThinVec<CompactString>,
+    strtab: ThinVec<CompactString>,
     filename: CompactString,
     line: u32,
     col: u32,
@@ -226,8 +233,6 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    // -- emit helpers -----------------------------------------------------
-
     fn emit(&mut self, op: Op) {
         let line = self.fun.lastline;
         let col = self.fun.lastcol;
@@ -247,6 +252,13 @@ impl<'a> Compiler<'a> {
     fn addfunction(&mut self, fun: FunRef) -> u32 {
         self.fun.funtab.push(fun);
         (self.fun.funtab.len() - 1) as u32
+    }
+
+    /// Register a string in this function's string table, returning its index.
+    /// Stored as an owned CompactString (inline for short names, no alloc).
+    fn strlit(&mut self, s: &str) -> u32 {
+        self.fun.strtab.push(CompactString::new(s));
+        (self.fun.strtab.len() - 1) as u32
     }
 
     fn addlocal(&mut self, ident: AstRef, reuse: bool) -> R<usize> {
@@ -332,10 +344,11 @@ impl<'a> Compiler<'a> {
 
         let i = self.findlocal(&name);
         if i < 0 {
+            let sidx = self.strlit(&name);
             match kind {
-                LocalOp::Get => self.emit(Op::GetVar(name)),
-                LocalOp::Set => self.emit(Op::SetVar(name)),
-                LocalOp::Del => self.emit(Op::DelVar(name)),
+                LocalOp::Get => self.emit(Op::GetVar(sidx)),
+                LocalOp::Set => self.emit(Op::SetVar(sidx)),
+                LocalOp::Del => self.emit(Op::DelVar(sidx)),
             }
         } else {
             match kind {
@@ -407,7 +420,8 @@ impl<'a> Compiler<'a> {
         self.checkfutureword(ident)?;
         let i = self.findlocal(&name);
         if i < 0 {
-            self.emit(Op::HasVar(name));
+            let sidx = self.strlit(&name);
+            self.emit(Op::HasVar(sidx));
         } else {
             self.emit(Op::GetLocal(i as u32));
         }
@@ -561,7 +575,8 @@ impl<'a> Compiler<'a> {
                 self.cexp(rhs)?;
                 self.emitline(exp);
                 let name = self.node(self.node(lhs).b).string.clone().unwrap_or_default();
-                self.emit(Op::SetPropS(name));
+                let sidx = self.strlit(&name);
+                self.emit(Op::SetPropS(sidx));
             }
             _ => return self.cerror(lhs, "invalid l-value in assignment"),
         }
@@ -604,7 +619,8 @@ impl<'a> Compiler<'a> {
                 self.emitline(lhs);
                 self.emit(Op::Rot2);
                 let name = self.node(self.node(lhs).b).string.clone().unwrap_or_default();
-                self.emit(Op::SetPropS(name));
+                let sidx = self.strlit(&name);
+                self.emit(Op::SetPropS(sidx));
                 self.emit(Op::Pop);
             }
             _ => return self.cerror(lhs, "invalid l-value in for-in loop assignment"),
@@ -630,7 +646,8 @@ impl<'a> Compiler<'a> {
                 self.emitline(lhs);
                 self.emit(Op::Dup);
                 let name = self.node(self.node(lhs).b).string.clone().unwrap_or_default();
-                self.emit(Op::GetPropS(name));
+                let sidx = self.strlit(&name);
+                self.emit(Op::GetPropS(sidx));
             }
             _ => return self.cerror(lhs, "invalid l-value in assignment"),
         }
@@ -659,7 +676,8 @@ impl<'a> Compiler<'a> {
                     self.emit(Op::Rot3);
                 }
                 let name = self.node(self.node(lhs).b).string.clone().unwrap_or_default();
-                self.emit(Op::SetPropS(name));
+                let sidx = self.strlit(&name);
+                self.emit(Op::SetPropS(sidx));
             }
             _ => return self.cerror(lhs, "invalid l-value in assignment"),
         }
@@ -700,7 +718,8 @@ impl<'a> Compiler<'a> {
                 self.cexp(self.node(arg).a)?;
                 self.emitline(exp);
                 let name = self.node(self.node(arg).b).string.clone().unwrap_or_default();
-                self.emit(Op::DelPropS(name));
+                let sidx = self.strlit(&name);
+                self.emit(Op::DelPropS(sidx));
             }
             _ => return self.cerror(exp, "invalid l-value in delete expression"),
         }
@@ -735,7 +754,8 @@ impl<'a> Compiler<'a> {
                 self.cexp(self.node(fun).a)?;
                 self.emit(Op::Dup);
                 let name = self.node(self.node(fun).b).string.clone().unwrap_or_default();
-                self.emit(Op::GetPropS(name));
+                let sidx = self.strlit(&name);
+                self.emit(Op::GetPropS(sidx));
                 self.emit(Op::Rot2);
             }
             AstType::ExpIdentifier => {
@@ -792,7 +812,8 @@ impl<'a> Compiler<'a> {
                 self.emitline(exp);
                 let s = self.node(exp).string.clone().unwrap_or_default();
                 let flags = self.node(exp).number as u32;
-                self.emit(Op::NewRegexp(s, flags));
+                let sidx = self.strlit(&s);
+                self.emit(Op::NewRegexp(sidx, flags));
             }
             AstType::ExpObject => {
                 self.emitline(exp);
@@ -828,7 +849,8 @@ impl<'a> Compiler<'a> {
                 self.cexp(self.node(exp).a)?;
                 self.emitline(exp);
                 let name = self.node(self.node(exp).b).string.clone().unwrap_or_default();
-                self.emit(Op::GetPropS(name));
+                let sidx = self.strlit(&name);
+                self.emit(Op::GetPropS(sidx));
             }
             AstType::ExpCall => {
                 self.ccall(self.node(exp).a, self.node(exp).b)?;
@@ -1023,7 +1045,8 @@ impl<'a> Compiler<'a> {
             }
             self.emitline(catchvar);
             let name = self.node(catchvar).string.clone().unwrap_or_default();
-            self.emit(Op::Catch(name));
+            let sidx = self.strlit(&name);
+            self.emit(Op::Catch(sidx));
             self.cstm(catchstm)?;
             self.emit(Op::EndCatch);
             let l2 = self.emitjump(Op::Jump); // skip past the try block
@@ -1067,7 +1090,8 @@ impl<'a> Compiler<'a> {
             }
             self.emitline(catchvar);
             let name = self.node(catchvar).string.clone().unwrap_or_default();
-            self.emit(Op::Catch(name));
+            let sidx = self.strlit(&name);
+            self.emit(Op::Catch(sidx));
             self.cstm(catchstm)?;
             self.emit(Op::EndCatch);
             self.emit(Op::EndTry);
@@ -1727,6 +1751,7 @@ impl<'a> Compiler<'a> {
                 code: ThinVec::new(),
                 funtab: ThinVec::new(),
                 vartab: ThinVec::new(),
+                strtab: ThinVec::new(),
                 filename,
                 line,
                 col,
@@ -1747,6 +1772,7 @@ impl<'a> Compiler<'a> {
             code: Rc::new(sub.fun.code),
             funtab: Rc::new(sub.fun.funtab),
             vartab: Rc::new(sub.fun.vartab),
+            strtab: Rc::new(sub.fun.strtab),
             filename: sub.fun.filename,
             line: sub.fun.line,
             col: sub.fun.col,
@@ -1807,6 +1833,7 @@ pub fn compile_script(st: &mut State, ast: &Ast, default_strict: bool) -> R<FunR
             code: ThinVec::new(),
             funtab: ThinVec::new(),
             vartab: ThinVec::new(),
+            strtab: ThinVec::new(),
             filename,
             line: root_line,
             col: root_col,
@@ -1827,6 +1854,7 @@ pub fn compile_script(st: &mut State, ast: &Ast, default_strict: bool) -> R<FunR
         code: Rc::new(c.fun.code),
         funtab: Rc::new(c.fun.funtab),
         vartab: Rc::new(c.fun.vartab),
+        strtab: Rc::new(c.fun.strtab),
         filename: c.fun.filename,
         line: c.fun.line,
         col: c.fun.col,
@@ -1854,6 +1882,7 @@ pub fn compile_function(st: &mut State, ast: &Ast) -> R<FunRef> {
             arguments: false,
             numparams: 0,
             code: ThinVec::new(),
+            strtab: ThinVec::new(),
             funtab: ThinVec::new(),
             vartab: ThinVec::new(),
             filename,

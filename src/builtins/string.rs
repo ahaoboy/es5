@@ -855,7 +855,7 @@ fn sp_iterator(st: &mut State) -> R<()> {
         .map(|c| {
             let mut out = String::new();
             utf::push_rune(&mut out, *c as u32);
-            Value::String(st.heap.intern(&out))
+            Value::String(std::rc::Rc::from(out))
         })
         .collect();
     make_es6_iterator(st, values)

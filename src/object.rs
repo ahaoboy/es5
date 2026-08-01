@@ -287,7 +287,7 @@ impl Heap {
     #[inline]
     pub fn js_str<'a>(&'a self, v: &'a Value) -> &'a str {
         match v {
-            Value::String(r) => r.as_str(),
+            Value::String(r) => r.as_ref(),
             Value::LitStr(i) => self.lits[*i as usize].as_str(),
             _ => "",
         }
@@ -297,7 +297,7 @@ impl Heap {
     #[inline]
     pub fn js_rcstr(&self, v: &Value) -> CompactString {
         match v {
-            Value::String(r) => r.clone(),
+            Value::String(r) => CompactString::from(&**r),
             Value::LitStr(i) => self.lits[*i as usize].clone(),
             _ => CompactString::new(""),
         }
@@ -445,17 +445,16 @@ impl Heap {
         }
         self.gccounter += 1;
         let key = self.intern(name);
-        let order = {
-            let object = self.obj_mut(obj);
-            let order = object.next_order;
-            object.next_order += 1;
-            order
-        };
+        // single lookup: reserve the slot (with its insertion order) then
+        // fill it, avoiding a second hash
+        let order = self.obj_mut(obj).next_order;
+        self.obj_mut(obj).next_order += 1;
+        let prop = Property::new(order);
         Some(
             self.obj_mut(obj)
                 .properties
                 .entry(key)
-                .or_insert_with(|| Property::new(order)),
+                .or_insert(prop),
         )
     }
 
@@ -816,10 +815,11 @@ impl State {
         self.mark_object(mark, r_reg, &mut worklist);
         self.mark_object(mark, r_glob, &mut worklist);
 
-        // roots: value stack
+        // roots: value stack (extract only ObjRefs, no Value clones)
         for i in 0..self.top {
-            let v = self.stack[i].clone();
-            self.mark_value(mark, &v, &mut worklist);
+            if let Value::Object(r) = &self.stack[i] {
+                self.mark_object(mark, *r, &mut worklist);
+            }
         }
 
         // roots: environments

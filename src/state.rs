@@ -297,22 +297,28 @@ impl State {
     /// Negative indices count down from the top; non-negative from bot.
     #[inline]
     pub fn si(&self, idx: i32) -> Option<usize> {
-        let i = if idx < 0 {
-            self.top as i64 + idx as i64
+        // the common case (-N..=-1) uses isize arithmetic, no i64 widening
+        if idx < 0 {
+            let i = self.top as isize + idx as isize;
+            if i < 0 {
+                None
+            } else {
+                Some(i as usize)
+            }
         } else {
-            self.bot as i64 + idx as i64
-        };
-        if i < 0 || i >= self.top as i64 {
-            None
-        } else {
-            Some(i as usize)
+            let i = self.bot as isize + idx as isize;
+            if i < 0 || i >= self.top as isize {
+                None
+            } else {
+                Some(i as usize)
+            }
         }
     }
 
     #[inline]
     pub fn stackidx(&self, idx: i32) -> &Value {
         match self.si(idx) {
-            Some(i) => &self.stack[i],
+            Some(i) => unsafe { self.stack.get_unchecked(i) },
             None => &Value::Undefined,
         }
     }
@@ -320,7 +326,7 @@ impl State {
     #[inline]
     pub fn stackidx_mut(&mut self, idx: i32) -> &mut Value {
         match self.si(idx) {
-            Some(i) => &mut self.stack[i],
+            Some(i) => unsafe { self.stack.get_unchecked_mut(i) },
             None => panic!("stack index out of range"),
         }
     }
@@ -351,11 +357,15 @@ impl State {
 
     #[inline]
     pub fn push_value(&mut self, v: Value) -> R<()> {
-        // CHECKSTACK(1): leave room for the error value itself
+        // CHECKSTACK(1): leave room for the error value itself.
+        // The stack is a fixed-size Vec; unsafe index is safe because
+        // `top` is maintained < JS_STACKSIZE by all push paths.
         if self.top + 1 >= JS_STACKSIZE {
             return self.stack_overflow();
         }
-        self.stack[self.top] = v;
+        unsafe {
+            *self.stack.get_unchecked_mut(self.top) = v;
+        }
         self.top += 1;
         Ok(())
     }
@@ -380,7 +390,7 @@ impl State {
         if v.len() > JS_STRLIMIT {
             return self.range_error("invalid string length");
         }
-        self.push_value(Value::String(CompactString::new(v)))
+        self.push_value(Value::String(Rc::from(v)))
     }
 
     pub fn push_lstring(&mut self, v: &str) -> R<()> {
@@ -396,7 +406,9 @@ impl State {
         if v.len() > JS_STRLIMIT {
             return self.range_error("invalid string length");
         }
-        self.push_value(Value::String(v))
+        // CompactString -> Rc<str>: copies only if >24 bytes (small strings
+        // were inline in the CompactString). Acceptable: this path is cold.
+        self.push_value(Value::String(Rc::from(v.as_str())))
     }
 
     /// Push an existing string value (any string variant).
@@ -423,7 +435,8 @@ impl State {
 
     #[inline]
     pub fn top_value(&self) -> Value {
-        self.stack[self.top - 1].clone()
+        // `top` is always >= 1 when this is called on a live stack slot
+        unsafe { self.stack.get_unchecked(self.top - 1).clone() }
     }
 
     #[inline]
@@ -650,8 +663,11 @@ impl State {
             Value::String(_) | Value::LitStr(_) => Ok(self.heap.js_rcstr(&v)),
             Value::Number(n) => {
                 let s = number::number_to_string(n);
-                let rc = self.heap.intern(&s);
-                *self.stackidx_mut(idx) = Value::String(rc.clone());
+                let rc = CompactString::from(s);
+                // cache the stringified form on the stack (avoids re-conversion)
+                // but do NOT intern: runtime numbers produce unbounded unique
+                // strings, and the intern table never frees.
+                *self.stackidx_mut(idx) = Value::String(Rc::from(rc.as_str()));
                 Ok(rc)
             }
             Value::Object(_) => {
@@ -766,7 +782,8 @@ impl State {
             .heap
             .alloc_object(Class::String, Some(self.protos.string));
         let length = utf::utflen(v) as i32;
-        let rc = self.heap.intern(v);
+        // do NOT intern: boxed strings may be arbitrary runtime values
+        let rc = CompactString::new(v);
         self.heap.obj_mut(o).payload = Payload::String(StringData { string: rc, length });
         o
     }
@@ -1075,8 +1092,14 @@ impl State {
         while let Some(er) = e {
             let env = self.heap.env(er);
             let vars = env.variables;
-            if let Some(prop) = self.heap.get_property(vars, name) {
-                let prop = prop.clone();
+            // fast path: own property of this environment's variable object
+            // (avoids walking the prototype chain for ordinary locals)
+            let own = self.heap.get_own_property(vars, name);
+            let prop = match own {
+                Some(p) => Some(p.clone()),
+                None => self.heap.get_property(vars, name).cloned(),
+            };
+            if let Some(prop) = prop {
                 if let Some(getter) = prop.getter {
                     self.push_object(getter)?;
                     self.push_object(vars)?;
@@ -1097,8 +1120,13 @@ impl State {
             let env = self.heap.env(er);
             let vars = env.variables;
             let outer = env.outer;
-            if let Some(prop) = self.heap.get_property(vars, name) {
-                let prop = prop.clone();
+            // fast path: own property lookup first
+            let own = self.heap.get_own_property(vars, name);
+            let prop = match own {
+                Some(p) => Some(p.clone()),
+                None => self.heap.get_property(vars, name).cloned(),
+            };
+            if let Some(prop) = prop {
                 if let Some(setter) = prop.setter {
                     self.push_object(setter)?;
                     self.push_object(vars)?;
@@ -2384,15 +2412,17 @@ impl State {
             let sb = self.tostring(-1)?;
             self.pop(2);
             STATS.concat_calls.fetch_add(1, Ordering::Relaxed);
-            let mut s = String::with_capacity(sa.len() + sb.len());
-            STATS
-                .concat_bytes
-                .fetch_add((sa.len() + sb.len()) as u64, Ordering::Relaxed);
-            s.push_str(&sa);
-            s.push_str(&sb);
-            // move the buffer into the arena (no second copy)
-            let interned = self.heap.intern(&s);
-            self.push_value(Value::String(interned))
+            let total = sa.len() + sb.len();
+            STATS.concat_bytes.fetch_add(total as u64, Ordering::Relaxed);
+            // build directly into the Rc's allocation (single alloc, no copy)
+            let mut buf = String::with_capacity(total);
+            buf.push_str(&sa);
+            buf.push_str(&sb);
+            let s: Rc<str> = Rc::from(buf);
+            // do NOT intern the result: concat produces unbounded unique strings
+            // and the intern table never frees them (memory leak). The owned
+            // Rc<str> is freed promptly when the value leaves the stack.
+            self.push_value(Value::String(s))
         } else {
             let x = self.tonumber(-2)?;
             let y = self.tonumber(-1)?;
@@ -2432,14 +2462,19 @@ impl State {
 
     pub fn equal(&mut self) -> R<bool> {
         loop {
-            let x = self.stackidx(-2).clone();
-            let y = self.stackidx(-1).clone();
+            let x = self.stackidx(-2);
+            let y = self.stackidx(-1);
 
             if x.is_string() && y.is_string() {
-                return Ok(self.heap.js_str(&x) == self.heap.js_str(&y));
+                // fast path: both literals → compare indices (content-equal
+                // literals are deduplicated at compile time)
+                if let (Value::LitStr(a), Value::LitStr(b)) = (x, y) {
+                    return Ok(a == b);
+                }
+                return Ok(self.heap.js_str(x) == self.heap.js_str(y));
             }
 
-            match (&x, &y) {
+            match (x, y) {
                 (Value::Undefined, Value::Undefined) => return Ok(true),
                 (Value::Null, Value::Null) => return Ok(true),
                 (Value::Number(a), Value::Number(b)) => return Ok(a == b),
@@ -2450,7 +2485,7 @@ impl State {
                 _ => {}
             }
 
-            match (&x, &y) {
+            match (x, y) {
                 (Value::Number(a), v) if v.is_string() => {
                     let a = *a;
                     let b = self.tonumber(-1)?;
@@ -2485,10 +2520,13 @@ impl State {
     }
 
     pub fn strictequal(&mut self) -> R<bool> {
-        let x = self.stackidx(-2).clone();
-        let y = self.stackidx(-1).clone();
+        let x = self.stackidx(-2);
+        let y = self.stackidx(-1);
         if x.is_string() && y.is_string() {
-            return Ok(self.heap.js_str(&x) == self.heap.js_str(&y));
+            if let (Value::LitStr(a), Value::LitStr(b)) = (x, y) {
+                return Ok(a == b);
+            }
+            return Ok(self.heap.js_str(x) == self.heap.js_str(y));
         }
         Ok(match (x, y) {
             (Value::Undefined, Value::Undefined) => true,

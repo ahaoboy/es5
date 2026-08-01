@@ -227,8 +227,7 @@ fn o_getownpropertydescriptor(st: &mut State) -> R<()> {
                     let rune = crate::utf::runeat(&s, k as usize).unwrap_or(0xFFFD);
                     let mut ch = String::new();
                     crate::utf::push_rune(&mut ch, rune);
-                    let ch = compact_str::CompactString::new(&ch);
-                    return data_descriptor(st, Value::String(ch), false, true, false);
+                    return data_descriptor(st, Value::String(std::rc::Rc::from(ch)), false, true, false);
                 }
         }
         Class::Regexp => {
@@ -242,7 +241,7 @@ fn o_getownpropertydescriptor(st: &mut State) -> R<()> {
                     _ => unreachable!(),
                 };
                 let (v, w): (Value, bool) = match name.as_ref() {
-                    "source" => (Value::String(source), false),
+                    "source" => (Value::String(std::rc::Rc::from(source.as_str())), false),
                     "global" => (Value::Boolean(flags & crate::value::JS_REGEXP_G != 0), false),
                     "ignoreCase" => (Value::Boolean(flags & crate::value::JS_REGEXP_I != 0), false),
                     "multiline" => (Value::Boolean(flags & crate::value::JS_REGEXP_M != 0), false),

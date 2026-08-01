@@ -41,12 +41,13 @@ fn isindex(st: &State, idx: i32) -> Option<i32> {
 
 /// Execute the compiled function `f` (jsR_run).
 pub fn run(st: &mut State, f: FunRef) -> R<()> {
-    let (code, funtab, vartab, lightweight, funstrict) = {
+    let (code, funtab, vartab, strtab, lightweight, funstrict) = {
         let fun = st.heap.fun(f);
         (
             fun.code.clone(),
             fun.funtab.clone(),
             fun.vartab.clone(),
+            fun.strtab.clone(),
             fun.lightweight,
             fun.strict,
         )
@@ -83,6 +84,13 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
             let inst: &Inst = &code[pc];
             pc += 1;
 
+            // MuJS jsR_run: update the trace line BEFORE executing the
+            // instruction so error objects created mid-instruction capture
+            // the correct source position. Two 4-byte stores to the same
+            // address; no branch.
+            st.trace[st.tracetop].line = inst.line;
+            st.trace[st.tracetop].col = inst.col;
+
             if matches!(inst.op, Op::Return) {
                 st.strict = savestrict;
                 return Ok(());
@@ -114,7 +122,10 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
             Op::Closure(i) => st.newfunction(funtab[*i as usize], st.e),
             Op::NewObject => st.newobject(),
             Op::NewArray => st.newarray(),
-            Op::NewRegexp(s, flags) => crate::builtins::regexp::new_regexp(st, s, *flags),
+            Op::NewRegexp(si, flags) => {
+                let s = &strtab[*si as usize];
+                crate::builtins::regexp::new_regexp(st, s, *flags)
+            }
 
             Op::Undef => st.push_undefined(),
             Op::Null => st.push_null(),
@@ -133,7 +144,8 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
             Op::GetLocal(i) => {
                 let i = *i as usize;
                 if lightweight {
-                    let v = st.stack[st.bot + i].clone();
+                    // hot path: direct stack slot, no bounds check
+                    let v = unsafe { st.stack.get_unchecked(st.bot + i).clone() };
                     st.push_value(v)
                 } else {
                     let name = vartab[i - 1].clone();
@@ -147,7 +159,8 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
             Op::SetLocal(i) => {
                 let i = *i as usize;
                 if lightweight {
-                    st.stack[st.bot + i] = st.stack[st.top - 1].clone();
+                    let v = unsafe { st.stack.get_unchecked(st.top - 1).clone() };
+                    *unsafe { st.stack.get_unchecked_mut(st.bot + i) } = v;
                     Ok(())
                 } else {
                     let name = vartab[i - 1].clone();
@@ -165,21 +178,27 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
                 }
             }
 
-            Op::GetVar(name) => {
+            Op::GetVar(si) => {
+                let name = &strtab[*si as usize];
                 if !st.hasvar(name)? {
                     st.reference_error(&format!("'{}' is not defined", name))
                 } else {
                     Ok(())
                 }
             }
-            Op::HasVar(name) => {
+            Op::HasVar(si) => {
+                let name = &strtab[*si as usize];
                 if !st.hasvar(name)? {
                     st.push_undefined()?;
                 }
                 Ok(())
             }
-            Op::SetVar(name) => st.setvar(name),
-            Op::DelVar(name) => {
+            Op::SetVar(si) => {
+                let name = &strtab[*si as usize];
+                st.setvar(name)
+            }
+            Op::DelVar(si) => {
+                let name = &strtab[*si as usize];
                 let b = st.delvar(name)?;
                 st.push_boolean(b)
             }
@@ -245,7 +264,8 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
                 st.rot3pop2();
                 Ok(())
             }
-            Op::GetPropS(name) => {
+            Op::GetPropS(si) => {
+                let name = &strtab[*si as usize];
                 let obj = st.toobject(-1)?;
                 st.get_property(obj, name)?;
                 st.rot2pop1();
@@ -268,7 +288,8 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
                 st.rot3pop2();
                 Ok(())
             }
-            Op::SetPropS(name) => {
+            Op::SetPropS(si) => {
+                let name = &strtab[*si as usize];
                 let obj = st.toobject(-2)?;
                 let transient = !st.isobject(-2);
                 st.set_property(obj, name, transient)?;
@@ -285,7 +306,8 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
                 st.pop(2);
                 st.push_boolean(b)
             }
-            Op::DelPropS(name) => {
+            Op::DelPropS(si) => {
+                let name = &strtab[*si as usize];
                 let obj = st.toobject(-1)?;
                 let b = st.del_property(obj, name)?;
                 st.pop(1);
@@ -525,7 +547,8 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
                 Ok(())
             }
 
-            Op::Catch(name) => {
+            Op::Catch(si) => {
+                let name = &strtab[*si as usize];
                 let obj = st.heap.alloc_object(Class::Object, None);
                 st.push_object(obj)?;
                 st.rot2();
@@ -593,11 +616,8 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
         match r {
             Ok(()) => {}
             Err(v) => {
-                if pc > 0 && pc - 1 < code.len() {
-                    let inst = &code[pc - 1];
-                    st.trace[st.tracetop].line = inst.line;
-                    st.trace[st.tracetop].col = inst.col;
-                }
+                // the trace was updated before execution, so the error
+                // object already captured the correct line/col
                 if st.trystk.len() > base_try {
                     let frame = st.trystk.pop().expect("try frame");
                     st.restore_frame(&frame);
