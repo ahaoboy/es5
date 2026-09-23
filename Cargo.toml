@@ -9,14 +9,14 @@ description = "A ES5 JavaScript interpreter written in Rust"
 
 [dependencies]
 miette = { version = "7", features = ["fancy"], optional = true }
-regress = "0.11"
+regress = "0.12"
 thiserror = { version = "2", optional = true }
 time = { version = "0.3", features = ["local-offset"] }
 git-version = { version = "0.3" }
 const-str = { version = "1" }
 itoa = "1"
 crossterm = { version = "0.29", optional = true }
-compact_str = "0.8"
+compact_str = "0.10"
 thin-vec = "0.2"
 indexmap = "2"
 rustc-hash = "2"
