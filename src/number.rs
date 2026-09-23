@@ -5,53 +5,129 @@
 //! the Rust standard library. Only the ECMAScript-specific formatting rules
 //! (jsV_numbertostring) and the digit-table strtol are implemented by hand.
 
-/// Format an integer like C `sprintf(buf, "%d", v)`.
-pub fn itoa(v: i32) -> String {
-    v.to_string()
+/// A tiny stack buffer implementing `fmt::Write`, so `write!` can format
+/// into fixed storage without allocating.
+struct FixBuf {
+    buf: [u8; 40],
+    len: usize,
 }
 
-/// Format exponent like sprintf(p, "e%+d", e) (js_fmtexp).
-pub fn fmtexp(e: i32) -> String {
-    if e < 0 {
-        format!("e-{}", -(e as i64))
-    } else {
-        format!("e+{}", e)
+impl FixBuf {
+    fn new() -> FixBuf {
+        FixBuf { buf: [0; 40], len: 0 }
     }
+    fn as_bytes(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
+}
+
+impl std::fmt::Write for FixBuf {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let b = s.as_bytes();
+        if self.len + b.len() > self.buf.len() {
+            return Err(std::fmt::Error);
+        }
+        self.buf[self.len..self.len + b.len()].copy_from_slice(b);
+        self.len += b.len();
+        Ok(())
+    }
+}
+
+/// Append an exponent like `sprintf(p, "e%+d", e)` (js_fmtexp). No allocation.
+fn push_fmtexp(out: &mut String, e: i32) {
+    out.push('e');
+    if e < 0 {
+        out.push('-');
+        push_u32(out, e.unsigned_abs());
+    } else {
+        out.push('+');
+        push_u32(out, e as u32);
+    }
+}
+
+/// Append the decimal digits of a u32 without allocating.
+fn push_u32(out: &mut String, mut v: u32) {
+    let mut buf = [0u8; 10];
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    // all bytes written are ASCII digits
+    out.push_str(std::str::from_utf8(&buf[i..]).unwrap());
 }
 
 /// ToString() on a number, following the ECMA-262 rules as implemented by
 /// jsV_numbertostring in jsvalue.c. The shortest round-trip digits are
 /// obtained from Rust's `{:e}` formatter instead of grisu2.
 pub fn number_to_string(f: f64) -> String {
+    let mut out = String::with_capacity(24);
+    write_number(&mut out, f);
+    out
+}
+
+/// Append ToString(number) to `out` (allocation-free apart from growing
+/// `out` itself).
+fn write_number(out: &mut String, f: f64) {
     if f == 0.0 {
-        return "0".to_string();
+        out.push('0');
+        return;
     }
     if f.is_nan() {
-        return "NaN".to_string();
+        out.push_str("NaN");
+        return;
     }
     if f.is_infinite() {
-        return if f < 0.0 { "-Infinity" } else { "Infinity" }.to_string();
+        out.push_str(if f < 0.0 { "-Infinity" } else { "Infinity" });
+        return;
     }
 
     // Fast case for 32-bit integers exactly representable as doubles.
     if (-2147483648.0..=2147483647.0).contains(&f) {
         let i = f as i32;
         if i as f64 == f {
-            return i.to_string();
+            if i < 0 {
+                out.push('-');
+                push_u32(out, (i as i64).unsigned_abs() as u32);
+            } else {
+                push_u32(out, i as u32);
+            }
+            return;
         }
     }
 
     // Obtain the shortest digits and decimal exponent from Rust's
     // LowerExp formatter, e.g. "1.2345e3" -> digits="12345", point=4.
-    let s = format!("{:e}", f.abs());
-    let (mant, exp) = s.split_once('e').expect("LowerExp always contains e");
-    let exp10: i32 = exp.parse().expect("valid exponent");
-    let digits: Vec<u8> = mant.bytes().filter(|&c| c != b'.').collect();
-    let ndigits = digits.len() as i32;
+    // A fixed 32-byte buffer holds any f64 in scientific notation
+    // ("-d.ddddddddddddddddde-308" is well under 32 bytes), so this needs
+    // no heap allocation at all.
+    let mut fb = FixBuf::new();
+    {
+        use std::fmt::Write as _;
+        write!(&mut fb, "{:e}", f.abs()).expect("buffer is large enough");
+    }
+    let sci = fb.as_bytes();
+    let epos = sci.iter().position(|&c| c == b'e').expect("LowerExp has 'e'");
+    let exp10: i32 = std::str::from_utf8(&sci[epos + 1..])
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .expect("valid exponent");
+    // collect the significand digits, skipping the '.'
+    let mut digits = [0u8; 24];
+    let mut ndigits = 0usize;
+    for &c in &sci[..epos] {
+        if c != b'.' {
+            digits[ndigits] = c;
+            ndigits += 1;
+        }
+    }
     // value = 0.d1d2...dn * 10^point (grisu2: point = ndigits + K)
     let point = exp10 + 1;
 
-    let mut out = String::with_capacity(32);
     if f.is_sign_negative() {
         out.push('-');
     }
@@ -61,25 +137,25 @@ pub fn number_to_string(f: f64) -> String {
         out.push(digits[0] as char);
         if ndigits > 1 {
             out.push('.');
-            for &d in &digits[1..] {
+            for &d in &digits[1..ndigits] {
                 out.push(d as char);
             }
         }
-        out.push_str(&fmtexp(point - 1));
+        push_fmtexp(out, point - 1);
     } else if point <= 0 {
         // Small fraction: 0.000ddd
         out.push_str("0.");
         for _ in 0..-point {
             out.push('0');
         }
-        for &d in &digits {
+        for &d in &digits[..ndigits] {
             out.push(d as char);
         }
     } else {
         // Plain decimal with the point inside or after the digits.
         let mut point = point;
         let mut i = 0;
-        let mut nd = ndigits;
+        let mut nd = ndigits as i32;
         while nd > 0 {
             out.push(digits[i] as char);
             i += 1;
@@ -94,7 +170,6 @@ pub fn number_to_string(f: f64) -> String {
             point -= 1;
         }
     }
-    out
 }
 
 /// Parse as many decimal digits (in the given radix) as possible,

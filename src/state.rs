@@ -18,6 +18,8 @@ use crate::value::{Hint, JS_DONTCONF, JS_DONTENUM, JS_READONLY, Value};
 use compact_str::CompactString;
 use rustc_hash::FxHashMap;
 use std::rc::Rc;
+#[cfg(feature = "stats")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use thin_vec::ThinVec;
 
 /// Result type used throughout the engine; `Err` is a thrown JS exception.
@@ -148,28 +150,91 @@ macro_rules! def_error {
     };
 }
 
-/// Simple cumulative instrumentation for performance analysis.
+/// Runtime instrumentation: string-concatenation volume and GC time.
+///
+/// These counters exist purely to diagnose performance problems, but they sit
+/// on hot paths (every concatenation, every collection). They are therefore
+/// compiled behind the `stats` feature: with the feature off, every method is
+/// an empty `#[inline(always)]` body that the optimizer removes entirely, so
+/// the interpreter pays nothing for statistics it is not collecting.
+#[cfg(feature = "stats")]
 pub struct Stats {
-    pub concat_calls: std::sync::atomic::AtomicU64,
-    pub concat_bytes: std::sync::atomic::AtomicU64,
-    pub gc_calls: std::sync::atomic::AtomicU64,
-    pub gc_nanos: std::sync::atomic::AtomicU64,
+    concat_calls: AtomicU64,
+    concat_bytes: AtomicU64,
+    gc_calls: AtomicU64,
+    gc_nanos: AtomicU64,
 }
 
+#[cfg(feature = "stats")]
 impl Stats {
     const fn new() -> Stats {
         Stats {
-            concat_calls: std::sync::atomic::AtomicU64::new(0),
-            concat_bytes: std::sync::atomic::AtomicU64::new(0),
-            gc_calls: std::sync::atomic::AtomicU64::new(0),
-            gc_nanos: std::sync::atomic::AtomicU64::new(0),
+            concat_calls: AtomicU64::new(0),
+            concat_bytes: AtomicU64::new(0),
+            gc_calls: AtomicU64::new(0),
+            gc_nanos: AtomicU64::new(0),
         }
+    }
+
+    /// Record one string concatenation that produced `bytes` bytes.
+    #[inline]
+    pub fn add_concat(&self, bytes: usize) {
+        self.concat_calls.fetch_add(1, Ordering::Relaxed);
+        self.concat_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    /// Record one collection that took `nanos` nanoseconds.
+    #[inline]
+    pub fn add_gc(&self, nanos: u64) {
+        self.gc_calls.fetch_add(1, Ordering::Relaxed);
+        self.gc_nanos.fetch_add(nanos, Ordering::Relaxed);
+    }
+
+    /// Print the cumulative counters to stderr when `ES5_STATS` is set.
+    pub fn report(&self) {
+        if std::env::var_os("ES5_STATS").is_none() {
+            return;
+        }
+        eprintln!(
+            "[stats] concat: calls={} bytes={}MB | gc: calls={} time={}ms",
+            self.concat_calls.load(Ordering::Relaxed),
+            self.concat_bytes.load(Ordering::Relaxed) / 1_000_000,
+            self.gc_calls.load(Ordering::Relaxed),
+            self.gc_nanos.load(Ordering::Relaxed) / 1_000_000,
+        );
+    }
+
+    /// Whether `ES5_GCDEBUG` is set (the environment is read only once).
+    pub fn gc_trace_enabled(&self) -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var_os("ES5_GCDEBUG").is_some())
+    }
+}
+
+/// Instrumentation disabled: every entry point is an empty inlined function.
+#[cfg(not(feature = "stats"))]
+pub struct Stats;
+
+#[cfg(not(feature = "stats"))]
+impl Stats {
+    const fn new() -> Stats {
+        Stats
+    }
+    #[inline(always)]
+    pub fn add_concat(&self, _bytes: usize) {}
+    #[inline(always)]
+    pub fn add_gc(&self, _nanos: u64) {}
+    #[inline(always)]
+    pub fn report(&self) {}
+    /// Always false without the feature, so the caller's trace block is dead
+    /// code the optimizer removes.
+    #[inline(always)]
+    pub fn gc_trace_enabled(&self) -> bool {
+        false
     }
 }
 
 pub static STATS: Stats = Stats::new();
-
-pub use std::sync::atomic::Ordering;
 
 /// The interpreter state (js_State).
 pub struct State {
@@ -205,8 +270,6 @@ pub struct State {
 
     pub runlimit: i32,
     pub memlimit: i32,
-
-    pub scratch: String,
 
     /// source text of every loaded script, for error diagnostics
     pub sources: FxHashMap<CompactString, CompactString>,
@@ -256,7 +319,6 @@ impl State {
             trystk: Vec::with_capacity(16),
             runlimit: 0,
             memlimit: 0,
-            scratch: String::new(),
             sources: rustc_hash::FxHashMap::default(),
             symbol_registry: rustc_hash::FxHashMap::default(),
             #[cfg(any(feature = "modules", feature = "timers"))]
@@ -504,13 +566,18 @@ impl State {
     }
 
     pub fn rot3(&mut self) {
-        // A B C -> C A B
-        self.stack[self.top - 3..self.top].rotate_right(1);
+        // A B C -> C A B (two swaps beat a slice rotate for 3 elements)
+        let t = self.top;
+        self.stack.swap(t - 3, t - 1);
+        self.stack.swap(t - 2, t - 1);
     }
 
     pub fn rot4(&mut self) {
         // A B C D -> D A B C
-        self.stack[self.top - 4..self.top].rotate_right(1);
+        let t = self.top;
+        self.stack.swap(t - 1, t - 2);
+        self.stack.swap(t - 2, t - 3);
+        self.stack.swap(t - 3, t - 4);
     }
 
     pub fn rot2pop1(&mut self) {
@@ -741,9 +808,12 @@ impl State {
 
     /// ToObject() on a stack slot (jsV_toobject).
     pub fn toobject(&mut self, idx: i32) -> R<ObjRef> {
+        // fast path: already an object (no Value clone, no boxing)
+        if let Value::Object(r) = self.stackidx(idx) {
+            return Ok(*r);
+        }
         let v = self.stackidx(idx).clone();
         let o = match v {
-            Value::Object(r) => return Ok(r),
             Value::Undefined => return self.type_error("cannot convert undefined to object"),
             Value::Null => return self.type_error("cannot convert null to object"),
             Value::String(_) | Value::LitStr(_) => {
@@ -752,6 +822,7 @@ impl State {
             }
             Value::Boolean(b) => self.new_boolean_object(b),
             Value::Number(n) => self.new_number_object(n),
+            Value::Object(_) => unreachable!(),
         };
         *self.stackidx_mut(idx) = Value::Object(o);
         Ok(o)
@@ -1097,20 +1168,19 @@ impl State {
         while let Some(er) = e {
             let env = self.heap.env(er);
             let vars = env.variables;
-            // fast path: own property of this environment's variable object
-            // (avoids walking the prototype chain for ordinary locals)
-            let own = self.heap.get_own_property(vars, name);
-            let prop = match own {
-                Some(p) => Some(p.clone()),
-                None => self.heap.get_property(vars, name).cloned(),
-            };
-            if let Some(prop) = prop {
-                if let Some(getter) = prop.getter {
+            // `vars` usually has no prototype (a plain environment object),
+            // in which case one own-property probe is exhaustive. Only the
+            // two fields that are actually used are copied out, rather than
+            // cloning the whole `Property`.
+            let found = self.heap.get_own_or_chain(vars, name);
+            if let Some(prop) = found {
+                let (getter, value) = (prop.getter, prop.value.clone());
+                if let Some(getter) = getter {
                     self.push_object(getter)?;
                     self.push_object(vars)?;
                     self.call(0)?;
                 } else {
-                    self.push_value(prop.value)?;
+                    self.push_value(value)?;
                 }
                 return Ok(true);
             }
@@ -1125,14 +1195,12 @@ impl State {
             let env = self.heap.env(er);
             let vars = env.variables;
             let outer = env.outer;
-            // fast path: own property lookup first
-            let own = self.heap.get_own_property(vars, name);
-            let prop = match own {
-                Some(p) => Some(p.clone()),
-                None => self.heap.get_property(vars, name).cloned(),
-            };
-            if let Some(prop) = prop {
-                if let Some(setter) = prop.setter {
+            // one hash probe in the common (prototype-less) case; only the
+            // fields needed are copied out, not the entire Property
+            let found = self.heap.get_own_or_chain(vars, name);
+            if let Some(prop) = found {
+                let (setter, atts) = (prop.setter, prop.atts);
+                if let Some(setter) = setter {
                     self.push_object(setter)?;
                     self.push_object(vars)?;
                     self.copy(-3)?;
@@ -1140,7 +1208,7 @@ impl State {
                     self.pop(1);
                     return Ok(());
                 }
-                if prop.atts & JS_READONLY == 0 {
+                if atts & JS_READONLY == 0 {
                     let v = self.stackidx(-1).clone();
                     self.heap
                         .set_property(vars, name)
@@ -1355,8 +1423,9 @@ impl State {
             }
             return Ok(false);
         }
-        let name = number::itoa(k);
-        self.has_property(obj, &name)
+        let mut buf = itoa::Buffer::new();
+        let name = buf.format(k);
+        self.has_property(obj, name)
     }
 
     /// jsR_getindex
@@ -1494,6 +1563,24 @@ impl State {
             _ => {}
         }
 
+        // Fast path: the property already exists as a plain writable data
+        // property (no getter/setter on the own slot). An own data property
+        // always shadows any prototype accessor, so `obj.x = v` for an
+        // ordinary object reduces to a single hash lookup.
+        let simple = match self.heap.obj(obj).properties.get(name) {
+            Some(p) => p.getter.is_none() && p.setter.is_none() && p.atts & JS_READONLY == 0,
+            None => false,
+        };
+        if simple {
+            let v = self.stackidx(-1).clone();
+            let p = self
+                .heap
+                .set_property(obj, name)
+                .expect("existing property");
+            p.value = v;
+            return Ok(());
+        }
+
         // first try to find a setter in the prototype chain
         let (prop, own) = {
             let (p, own) = self.heap.get_property_x(obj, name);
@@ -1586,8 +1673,9 @@ impl State {
             let v = self.stackidx(-1).clone();
             self.set_array_index(obj, k, v)
         } else {
-            let name = number::itoa(k);
-            self.set_property(obj, &name, transient)
+            let mut buf = itoa::Buffer::new();
+            let name = buf.format(k);
+            self.set_property(obj, name, transient)
         }
     }
 
@@ -1760,8 +1848,9 @@ impl State {
             }
             return Ok(());
         }
-        let name = number::itoa(k);
-        self.del_property(obj, &name)?;
+        let mut buf = itoa::Buffer::new();
+        let name = buf.format(k);
+        self.del_property(obj, name)?;
         Ok(())
     }
 
@@ -1863,22 +1952,22 @@ impl State {
     // ------------------------------------------------------------------
 
     pub fn js_ref(&mut self) -> R<Rc<str>> {
-        let s = match self.stackidx(-1) {
+        // The registry key is only used as a property name, so it must not
+        // be interned: `js_ref` mints a fresh key each call and the intern
+        // table never frees. Only fixed constants come from `intern`.
+        let s: CompactString = match self.stackidx(-1) {
             Value::Undefined => self.heap.intern("_Undefined"),
             Value::Null => self.heap.intern("_Null"),
             Value::Boolean(b) => self.heap.intern(if *b { "_True" } else { "_False" }),
-            Value::Object(r) => {
-                let s = format!("@{}", r);
-                self.heap.intern(&s)
-            }
+            Value::Object(r) => CompactString::from(format!("@{}", r)),
             _ => {
-                let s = format!("{}", self.nextref);
+                let s = CompactString::from(format!("{}", self.nextref));
                 self.nextref += 1;
-                self.heap.intern(&s)
+                s
             }
         };
         self.setregistry(&s)?;
-        Ok(s.into())
+        Ok(s.as_str().into())
     }
 
     pub fn js_unref(&mut self, r: &str) -> R<()> {
@@ -1941,10 +2030,7 @@ impl State {
 
     pub fn nextiterator(&mut self, idx: i32) -> R<Option<CompactString>> {
         let o = self.toobject(idx)?;
-        let mut scratch = std::mem::take(&mut self.scratch);
-        let r = self.heap.next_iterator(o, &mut scratch);
-        self.scratch = scratch;
-        Ok(r)
+        Ok(self.heap.next_iterator(o))
     }
 
     // ------------------------------------------------------------------
@@ -2413,21 +2499,21 @@ impl State {
         self.toprimitive(-1, Hint::None)?;
 
         if self.isstring(-2) || self.isstring(-1) {
-            let sa = self.tostring(-2)?;
-            let sb = self.tostring(-1)?;
+            // Build directly into the final allocation. Appending the string
+            // form of a slot borrows existing string data instead of copying
+            // it into a temporary CompactString first, so concatenating two
+            // strings performs exactly one allocation.
+            let mut buf = String::with_capacity(
+                self.string_len_hint(-2) + self.string_len_hint(-1),
+            );
+            self.append_string_form(&mut buf, -2)?;
+            self.append_string_form(&mut buf, -1)?;
+            STATS.add_concat(buf.len());
             self.pop(2);
-            STATS.concat_calls.fetch_add(1, Ordering::Relaxed);
-            let total = sa.len() + sb.len();
-            STATS.concat_bytes.fetch_add(total as u64, Ordering::Relaxed);
-            // build directly into the Rc's allocation (single alloc, no copy)
-            let mut buf = String::with_capacity(total);
-            buf.push_str(&sa);
-            buf.push_str(&sb);
-            let s: Rc<str> = Rc::from(buf);
             // do NOT intern the result: concat produces unbounded unique strings
             // and the intern table never frees them (memory leak). The owned
             // Rc<str> is freed promptly when the value leaves the stack.
-            self.push_value(Value::String(s))
+            self.push_value(Value::String(Rc::from(buf)))
         } else {
             let x = self.tonumber(-2)?;
             let y = self.tonumber(-1)?;
@@ -2436,15 +2522,38 @@ impl State {
         }
     }
 
+    /// Byte length of a stack slot's string form, or 0 if it is not a string
+    /// (used only as a capacity hint).
+    #[inline]
+    fn string_len_hint(&self, idx: i32) -> usize {
+        match self.stackidx(idx) {
+            v @ (Value::String(_) | Value::LitStr(_)) => self.heap.js_str(v).len(),
+            _ => 0,
+        }
+    }
+
+    /// Append ToString(slot) to `out`, avoiding an intermediate allocation
+    /// when the slot already holds a string.
+    fn append_string_form(&mut self, out: &mut String, idx: i32) -> R<()> {
+        if self.isstring(idx) {
+            let v = self.stackidx(idx);
+            out.push_str(self.heap.js_str(v));
+            return Ok(());
+        }
+        let s = self.tostring(idx)?;
+        out.push_str(&s);
+        Ok(())
+    }
+
     /// js_compare: returns (ordering, okay).
     pub fn compare(&mut self) -> R<(i32, bool)> {
         self.toprimitive(-2, Hint::Number)?;
         self.toprimitive(-1, Hint::Number)?;
 
         if self.isstring(-2) && self.isstring(-1) {
-            let a = self.tostring(-2)?;
-            let b = self.tostring(-1)?;
-            let c = a.as_bytes().cmp(b.as_bytes());
+            // compare borrowed byte slices: no string allocation at all
+            let (a, b) = (self.stackidx(-2), self.stackidx(-1));
+            let c = self.heap.js_str(a).as_bytes().cmp(self.heap.js_str(b).as_bytes());
             Ok((c as i32, true))
         } else {
             let x = self.tonumber(-2)?;
@@ -2548,8 +2657,11 @@ impl State {
     // ------------------------------------------------------------------
 
     fn loadstringx(&mut self, filename: &str, source: &str, iseval: bool) -> R<()> {
+        // The filename is interned (it is used as a map key and appears in
+        // compiled functions); the source text is NOT, because the intern
+        // table never frees and a script is typically interned exactly once.
         let fname = self.heap.intern(filename);
-        self.sources.insert(fname, self.heap.intern(source));
+        self.sources.insert(fname, CompactString::new(source));
         let ast = parse::parse(self, filename, source)?;
         let default_strict = if iseval {
             self.strict
@@ -2584,14 +2696,16 @@ impl State {
         // skip first line if it starts with "#!"
         if source.starts_with("#!") {
             match source.find('\n') {
-                Some(i) => source = source[i..].to_string(),
+                Some(i) => {
+                    // keep the newline so line numbers stay correct
+                    source.drain(..i);
+                }
                 None => source.clear(),
             }
         }
-        let fname = self.heap.intern(filename);
-        let src = self.heap.intern(&source);
-        self.sources.insert(fname, src);
-        self.loadstring(filename, &source)
+        // loadstringx records the source in `sources`; no separate interning
+        // (the previous code interned filename + source twice).
+        self.loadstringx(filename, &source, false)
     }
 
     pub fn dostring(&mut self, source: &str) -> i32 {

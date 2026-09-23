@@ -38,12 +38,12 @@ pub fn new_regexp_x(st: &mut State, pattern: &str, flags: u32, is_clone: bool) -
         escape_regexp(st, pattern)
     };
     let obj = st.heap.alloc_object(Class::Regexp, Some(st.protos.regexp));
-    st.heap.obj_mut(obj).payload = Payload::Regexp(RegexpData {
+    st.heap.obj_mut(obj).payload = Payload::Regexp(Box::new(RegexpData {
         prog,
         source,
         flags,
         last: 0,
-    });
+    }));
     st.push_object(obj)
 }
 

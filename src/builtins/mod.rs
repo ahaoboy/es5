@@ -311,12 +311,12 @@ pub fn init(st: &mut State) {
         let prog = crate::regexp::Regexp::compile("(?:)", 0).expect("empty regexp compiles");
         let source = st.heap.intern("(?:)");
         st.heap.obj_mut(st.protos.regexp).payload = crate::object::Payload::Regexp(
-            crate::object::RegexpData {
+            Box::new(crate::object::RegexpData {
                 prog,
                 source,
                 flags: 0,
                 last: 0,
-            },
+            }),
         );
     }
 

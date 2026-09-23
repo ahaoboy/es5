@@ -430,16 +430,7 @@ fn real_main() -> i32 {
 
     st.gc(false);
 
-    if std::env::var("ES5_STATS").is_ok() {
-        let s = &es5::state::STATS;
-        eprintln!(
-            "[stats] concat: calls={} bytes={}MB | gc: calls={} time={}ms",
-            s.concat_calls.load(std::sync::atomic::Ordering::Relaxed),
-            s.concat_bytes.load(std::sync::atomic::Ordering::Relaxed) / 1_000_000,
-            s.gc_calls.load(std::sync::atomic::Ordering::Relaxed),
-            s.gc_nanos.load(std::sync::atomic::Ordering::Relaxed) / 1_000_000,
-        );
-    }
+    es5::state::STATS.report();
 
     status
 }

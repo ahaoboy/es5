@@ -9,6 +9,7 @@ use crate::compile::{Inst, Op};
 use crate::object::{Class, FunRef};
 use crate::state::{State, TryFrame, R, JS_TRYLIMIT};
 use crate::value::Value;
+use compact_str::CompactString;
 
 fn js_trap(st: &State, pc: usize) {
     println!("stack trace:");
@@ -52,6 +53,12 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
             fun.strict,
         )
     };
+    // Bind a plain slice up front: `code[pc]` through `Rc`/`ThinVec` would
+    // chase two extra pointers on every instruction.
+    let code: &[Inst] = &code;
+    let funtab: &[FunRef] = &funtab;
+    let vartab: &[CompactString] = &vartab;
+    let strtab: &[CompactString] = &strtab;
 
     let base_try = st.trystk.len();
     let savestrict = st.strict;
@@ -66,6 +73,12 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
             st.trystk.truncate(base_try);
             st.strict = savestrict;
             return Ok(());
+        }
+
+        // MuJS collects here, between instructions: the value stack plus
+        // the rest of the interpreter state is then a complete root set.
+        if st.heap.gccounter > st.heap.gcthresh {
+            st.gc(false);
         }
 
         let mut limit_err: Option<Value> = None;
@@ -83,27 +96,30 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
         if let Some(v) = limit_err {
             r = Err(v);
         } else {
-            let inst: &Inst = &code[pc];
+            // `pc < code.len()` was checked above, so this load is in range
+            let inst: &Inst = unsafe { code.get_unchecked(pc) };
             pc += 1;
 
             // MuJS jsR_run: update the trace line BEFORE executing the
             // instruction so error objects created mid-instruction capture
             // the correct source position. Two 4-byte stores to the same
-            // address; no branch.
-            st.trace[st.tracetop].line = inst.line;
-            st.trace[st.tracetop].col = inst.col;
-
-            if matches!(inst.op, Op::Return) {
-                // A return inside a try block skips OP_ENDTRY, leaving stale
-                // TRY frames on the shared trystk. Pop any frames pushed by
-                // THIS invocation so a later throw in a nested call cannot
-                // catch against (and jump pc into) a dead function's bytecode.
-                st.trystk.truncate(base_try);
-                st.strict = savestrict;
-                return Ok(());
+            // address; no branch. `tracetop < JS_ENVLIMIT == trace.len()`.
+            unsafe {
+                let t = st.trace.get_unchecked_mut(st.tracetop);
+                t.line = inst.line;
+                t.col = inst.col;
             }
 
             r = match &inst.op {
+                Op::Return => {
+                    // Also the exit for a return inside a try block, which
+                    // skips OP_ENDTRY and would otherwise leave stale TRY
+                    // frames on the shared trystk for a nested call to
+                    // catch against (and jump pc into) dead bytecode.
+                    st.trystk.truncate(base_try);
+                    st.strict = savestrict;
+                    return Ok(());
+                }
                 Op::Pop => {
                     st.pop(1);
                     Ok(())
@@ -155,8 +171,10 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
                     let v = unsafe { st.stack.get_unchecked(st.bot + i).clone() };
                     st.push_value(v)
                 } else {
-                    let name = vartab[i - 1].clone();
-                    if !st.hasvar(&name)? {
+                    // `vartab` is a local handle, so borrowing from it does
+                    // not conflict with `&mut st`: no name clone needed.
+                    let name = &vartab[i - 1];
+                    if !st.hasvar(name)? {
                         st.reference_error(&format!("'{}' is not defined", name))
                     } else {
                         Ok(())
@@ -170,8 +188,7 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
                     *unsafe { st.stack.get_unchecked_mut(st.bot + i) } = v;
                     Ok(())
                 } else {
-                    let name = vartab[i - 1].clone();
-                    st.setvar(&name)
+                    st.setvar(&vartab[i - 1])
                 }
             }
             Op::DelLocal(i) => {
@@ -179,8 +196,7 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
                 if lightweight {
                     st.push_boolean(false)
                 } else {
-                    let name = vartab[i - 1].clone();
-                    let b = st.delvar(&name)?;
+                    let b = st.delvar(&vartab[i - 1])?;
                     st.push_boolean(b)
                 }
             }
@@ -347,9 +363,7 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
             Op::NextIter => {
                 if st.isobject(-1) {
                     let io = st.toobject(-1)?;
-                    let mut scratch = std::mem::take(&mut st.scratch);
-                    let name = st.heap.next_iterator(io, &mut scratch);
-                    st.scratch = scratch;
+                    let name = st.heap.next_iterator(io);
                     match name {
                         Some(name) => {
                             st.push_string_rc(name)?;
@@ -632,10 +646,6 @@ pub fn run(st: &mut State, f: FunRef) -> R<()> {
                     pc = *offset;
                 }
                 Ok(())
-            }
-
-            Op::Return => {
-                unreachable!()
             }
         };
         }

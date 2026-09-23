@@ -4,7 +4,6 @@ version = "0.1.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/ahaoboy/es5"
-homepage = "https://github.com/ahaoboy/es5"
 authors = ["ahaoboy"]
 description = "A ES5 JavaScript interpreter written in Rust"
 
@@ -26,6 +25,10 @@ rustc-hash = "2"
 default = ["cli", "modules", "symbol"]
 # fancy terminal error diagnostics via miette/thiserror
 cli = ["dep:miette", "dep:thiserror"]
+# runtime instrumentation: concat/GC counters and ES5_STATS / ES5_GCDEBUG
+# tracing. Off by default because the counters sit on hot paths (every string
+# concatenation and every collection); enabling it costs a few atomics there.
+stats = []
 # Node.js-style builtin modules (process/os/path/fs/child_process/timers)
 modules = ["fs", "os", "path", "process", "child_process", "timers"]
 fs = ["require"]

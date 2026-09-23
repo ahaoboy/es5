@@ -174,11 +174,13 @@ pub enum Payload {
     Error(ErrorData),
     Function(FunctionData),
     CFunction(CFunctionData),
-    Regexp(RegexpData),
+    // Boxed: the compiled program is ~160 bytes, which would otherwise be
+    // paid by *every* object in the heap (Payload size = largest variant).
+    Regexp(Box<RegexpData>),
     Iterator(IteratorData),
     ES6Iterator(ES6IteratorData),
     #[cfg(feature = "require")]
-    Child(crate::builtins::modules::child_process::ChildData),
+    Child(Box<crate::builtins::modules::child_process::ChildData>),
     #[cfg(feature = "symbol")]
     Symbol(SymbolData),
     Map(MapData),
@@ -241,6 +243,9 @@ pub struct Heap {
     pub gcmark: u8,
     pub gccounter: u32,
     pub gcthresh: u32,
+    /// Reused mark-phase buffers (avoid allocating on every collection).
+    gc_worklist: Vec<ObjRef>,
+    gc_scratch: Vec<ObjRef>,
 }
 
 impl Heap {
@@ -258,6 +263,8 @@ impl Heap {
             gcmark: 1,
             gccounter: 0,
             gcthresh: 0,
+            gc_worklist: Vec::new(),
+            gc_scratch: Vec::new(),
         }
     }
 
@@ -391,8 +398,14 @@ impl Heap {
     }
 
     /// jsV_getproperty (walk the prototype chain)
+    #[inline]
     pub fn get_property(&self, obj: ObjRef, name: &str) -> Option<&Property> {
-        let mut o = Some(obj);
+        // own property first (avoids the Option<ObjRef> loop machinery)
+        let object = self.obj(obj);
+        if let Some(p) = object.properties.get(name) {
+            return Some(p);
+        }
+        let mut o = object.prototype;
         while let Some(r) = o {
             let object = self.obj(r);
             if let Some(p) = object.properties.get(name) {
@@ -401,6 +414,22 @@ impl Heap {
             o = object.prototype;
         }
         None
+    }
+
+    /// Own property, then the prototype chain — but when the object has no
+    /// prototype (the common case for environment variable objects) the own
+    /// lookup is already exhaustive, saving a second hash probe on every
+    /// variable access.
+    #[inline]
+    pub fn get_own_or_chain(&self, obj: ObjRef, name: &str) -> Option<&Property> {
+        let object = self.obj(obj);
+        if let Some(p) = object.properties.get(name) {
+            return Some(p);
+        }
+        match object.prototype {
+            None => None,
+            Some(proto) => self.get_property(proto, name),
+        }
     }
 
     /// jsV_getpropertyx: also report whether the property is an own property.
@@ -436,7 +465,8 @@ impl Heap {
     /// Returns None when the object is non-extensible and the property is
     /// missing (callers decide whether that is an error).
     pub fn set_property(&mut self, obj: ObjRef, name: &str) -> Option<&mut Property> {
-        // fast path: property already exists (no intern hash needed)
+        // fast path: the property already exists. One lookup, and no
+        // interning of the name (the overwrite case is by far the hottest).
         if self.obj(obj).properties.contains_key(name) {
             return self.obj_mut(obj).properties.get_mut(name);
         }
@@ -625,7 +655,7 @@ impl Heap {
     }
 
     /// jsV_nextiterator
-    pub fn next_iterator(&mut self, io: ObjRef, scratch: &mut String) -> Option<CompactString> {
+    pub fn next_iterator(&mut self, io: ObjRef) -> Option<CompactString> {
         let it = match &self.obj(io).payload {
             Payload::Iterator(it) => it,
             _ => return None,
@@ -635,8 +665,11 @@ impl Heap {
             if let Payload::Iterator(it) = &mut self.obj_mut(io).payload {
                 it.i += 1;
             }
-            *scratch = itoa_u32(i);
-            return Some(self.intern(scratch));
+            // Do NOT intern: iterating a large array/caller-generated index
+            // set would insert every index into the intern table, which
+            // never frees. The name is only used as a property key.
+            let mut buf = itoa::Buffer::new();
+            return Some(CompactString::from(buf.format(i)));
         }
         loop {
             let (target, name) = {
@@ -663,10 +696,6 @@ impl Default for Heap {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn itoa_u32(v: u32) -> String {
-    v.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -766,6 +795,16 @@ impl State {
                     fun = Some(a.fun);
                 }
                 Payload::Iterator(it) => scratch.push(it.target),
+                // ES6 iterators hold a snapshot of arbitrary values; those
+                // must be traced too or the objects they reference can be
+                // collected while the iterator is still live.
+                Payload::ES6Iterator(it) => {
+                    for v in &it.values {
+                        if let Value::Object(r) = v {
+                            scratch.push(*r);
+                        }
+                    }
+                }
                 Payload::Map(m) => {
                     for (k, v) in &m.entries {
                         if let Value::Object(r) = k {
@@ -799,16 +838,18 @@ impl State {
 
     /// js_gc: mark and sweep.
     pub fn gc(&mut self, report: bool) {
+        // Instrumentation timer; without the `stats` feature neither the
+        // timer nor any counter update is compiled in.
+        #[cfg(feature = "stats")]
         let gc_start = std::time::Instant::now();
-        crate::state::STATS.gc_calls.fetch_add(1, crate::state::Ordering::Relaxed);
         let mark = if self.heap.gcmark == 1 { 2 } else { 1 };
         self.heap.gcmark = mark;
 
-        let mut worklist: Vec<ObjRef> = Vec::new();
+        let mut worklist = std::mem::take(&mut self.heap.gc_worklist);
+        worklist.clear();
 
         // roots: prototypes, registry, global
-        let protos = self.protos.all();
-        for r in protos {
+        for r in self.protos.all() {
             self.mark_object(mark, r, &mut worklist);
         }
         let (r_reg, r_glob) = (self.r, self.g);
@@ -826,29 +867,60 @@ impl State {
         let (e, ge) = (self.e, self.ge);
         self.mark_env(mark, e, &mut worklist);
         self.mark_env(mark, ge, &mut worklist);
-        let envstack = self.envstack.clone();
-        for env in envstack {
+        // take/put back instead of cloning the vector
+        let envstack = std::mem::take(&mut self.envstack);
+        for &env in envstack.iter() {
             self.mark_env(mark, env, &mut worklist);
+        }
+        self.envstack = envstack;
+
+        // roots: symbol registry (`Symbol.for` keys must stay alive even
+        // when nothing else references the symbol object)
+        let registry = std::mem::take(&mut self.symbol_registry);
+        for &r in registry.values() {
+            self.mark_object(mark, r, &mut worklist);
+        }
+        self.symbol_registry = registry;
+
+        // roots: pending exception frames and the debug call stack. Both
+        // hold environments/functions that the interpreter itself may
+        // restore, so they must survive a collection.
+        let (ntry, ntrace) = (self.trystk.len(), self.tracetop + 1);
+        for i in 0..ntry {
+            let (fe, ffun) = (self.trystk[i].e, self.trystk[i].fun);
+            self.mark_env(mark, fe, &mut worklist);
+            if ffun != NONE {
+                self.mark_fun(mark, ffun);
+            }
+        }
+        for i in 0..ntrace {
+            let ffun = self.trace[i].fun;
+            if ffun != NONE {
+                self.mark_fun(mark, ffun);
+            }
         }
 
         // roots: scheduled timer callbacks and their arguments
         #[cfg(any(feature = "modules", feature = "timers"))]
         {
-            let mut timer_vals: Vec<Value> = Vec::new();
-            for t in &self.timers {
-                timer_vals.push(t.callback.clone());
-                timer_vals.extend(t.args.iter().cloned());
+            let timers = std::mem::take(&mut self.timers);
+            for t in &timers {
+                self.mark_value(mark, &t.callback, &mut worklist);
+                for v in &t.args {
+                    self.mark_value(mark, v, &mut worklist);
+                }
             }
-            for v in &timer_vals {
-                self.mark_value(mark, v, &mut worklist);
-            }
+            self.timers = timers;
         }
 
         // scan until fixpoint
-        let mut scratch: Vec<ObjRef> = Vec::with_capacity(64);
+        let mut scratch = std::mem::take(&mut self.heap.gc_scratch);
+        scratch.clear();
         while let Some(r) = worklist.pop() {
             self.scan_object(mark, r, &mut worklist, &mut scratch);
         }
+        self.heap.gc_scratch = scratch;
+        self.heap.gc_worklist = worklist;
 
         // sweep
         let (mut nenv, mut nfun, mut nobj, mut nprop) = (0u32, 0u32, 0u32, 0u32);
@@ -896,12 +968,15 @@ impl State {
         let remaining = ntot - gtot;
 
         self.heap.gccounter = remaining;
-        self.heap.gcthresh = (remaining as f64 * 5.0) as u32; // JS_GCFACTOR
-        crate::state::STATS
-            .gc_nanos
-            .fetch_add(gc_start.elapsed().as_nanos() as u64, crate::state::Ordering::Relaxed);
+        // JS_GCFACTOR: collect again once the heap has grown 5x since the
+        // last collection. The floor stops a nearly-empty heap from
+        // collecting on almost every allocation.
+        self.heap.gcthresh = ((remaining as f64 * 5.0) as u32).max(2048);
+        #[cfg(feature = "stats")]
+        crate::state::STATS.add_gc(gc_start.elapsed().as_nanos() as u64);
 
-        if std::env::var("ES5_GCDEBUG").is_ok() {
+        #[cfg(feature = "stats")]
+        if crate::state::STATS.gc_trace_enabled() {
             eprintln!(
                 "[gc] remaining={} thresh={} objs={} envs={} funs={}",
                 remaining,

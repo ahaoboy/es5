@@ -279,7 +279,7 @@ fn cp_spawn(st: &mut State) -> R<()> {
 
     let proto = Some(st.protos.object);
     let obj = st.heap.alloc_object(Class::Object, proto);
-    st.heap.obj_mut(obj).payload = Payload::Child(ChildData {
+    st.heap.obj_mut(obj).payload = Payload::Child(Box::new(ChildData {
         child: Some(child),
         out: String::new(),
         err: String::new(),
@@ -288,7 +288,7 @@ fn cp_spawn(st: &mut State) -> R<()> {
         out_fired: false,
         err_fired: false,
         close_fired: false,
-    });
+    }));
 
     st.push_object(obj)?;
 
